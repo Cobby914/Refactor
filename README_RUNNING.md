@@ -79,10 +79,20 @@ With CARLA running:
 python traffic/runner.py --scenario 3 --density 60 --duration 300 --pedestrians 20 --bicycles 10
 ```
 
-The runner ticks CARLA itself. Ctrl+C stops it and removes its actors.
+The headless standalone runner paces SUMO by wall time while CARLA runs asynchronously. Ctrl+C stops it and removes its actors.
 GUI version: `python traffic/gui_launcher.py`.
 
 If a hard-killed run left actors behind: `python traffic/clear_carla_actors.py --walkers`.
+
+### V2 live clock check
+
+Use a dedicated asynchronous CARLA server on `Town10HD_Opt`. The command runs 200 paired steps with headless SUMO at 20 Hz and reports the final CARLA frame and peak SUMO vehicle count. Actor mirroring comes in the next increment.
+
+```bash
+python -m fusion.traffic_session --carla-port 2000 --steps 200 --step-length 0.05
+```
+
+Use `--ready-timeout` for simulator startup and `--rpc-timeout` for simulator calls. The command restores CARLA's original world settings and closes its SUMO child on exit. See the [refactor progress](docs/refactor/PROGRESS.md) for integration checks.
 
 ## 5. Record a dataset (one scenario)
 

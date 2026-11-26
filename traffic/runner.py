@@ -208,7 +208,7 @@ def build_density_map(vph: int, direction: str) -> dict:
     }
 
 
-def substitute_density(template_path: str, density_map: dict, duration: int) -> str:
+def substitute_density(template_path: str, density_map: dict, duration: int, *, temp_dir=None) -> str:
     """Read route template, substitute placeholders, apply the map-edge routes,
     write to a temp file. Returns the path."""
     with open(template_path, "r", encoding="utf-8") as f:
@@ -237,15 +237,14 @@ def substitute_density(template_path: str, density_map: dict, duration: int) -> 
     if AMBIENT_AVAILABLE:
         content = ambient_traffic.apply_map_edge_routes(content)
 
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".rou.xml", delete=False, encoding="utf-8"
-    )
-    tmp.write(content)
-    tmp.close()
-    return tmp.name
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".rou.xml", delete=False, encoding="utf-8", dir=temp_dir
+    ) as tmp:
+        tmp.write(content)
+        return tmp.name
 
 
-def write_busstop_additional() -> str:
+def write_busstop_additional(*, temp_dir=None) -> str:
     """Write a temp additional file with just the bus stop. Returns path."""
     # The bus stop sits on the westbound monitored edge (SUMO edge 20). Edge 20
     # lanes are: 20_0 sidewalk (pedestrian-only after the net rebuild),
@@ -270,17 +269,16 @@ def write_busstop_additional() -> str:
         '             name="Main Street Bus Stop"/>',
         '</additional>',
     ]
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".add.xml", delete=False, encoding="utf-8"
-    )
-    tmp.write("\n".join(lines))
-    tmp.close()
-    return tmp.name
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".add.xml", delete=False, encoding="utf-8", dir=temp_dir
+    ) as tmp:
+        tmp.write("\n".join(lines))
+        return tmp.name
 
 
 def write_sumocfg(net_file: str, route_file: str, add_files: list,
                   duration: int, step_length: float = 0.1,
-                  ignore_route_errors: bool = False, seed: int = 42) -> str:
+                  ignore_route_errors: bool = False, seed: int = 42, *, temp_dir=None) -> str:
     """Write a temporary .sumocfg. add_files is a list of paths.
 
     ignore_route_errors: in city mode, a single randomly-generated ambient trip
@@ -348,12 +346,11 @@ def write_sumocfg(net_file: str, route_file: str, add_files: list,
         '    </report>',
         '</configuration>',
     ]
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".sumocfg", delete=False, encoding="utf-8"
-    )
-    tmp.write("\n".join(lines))
-    tmp.close()
-    return tmp.name
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".sumocfg", delete=False, encoding="utf-8", dir=temp_dir
+    ) as tmp:
+        tmp.write("\n".join(lines))
+        return tmp.name
 
 
 # --- Scenario-specific TraCI logic ---

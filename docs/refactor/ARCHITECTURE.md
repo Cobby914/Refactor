@@ -26,7 +26,15 @@ The v2 code uses the standard library and project-specific interfaces. Upstream 
 
 [`fusion.simulation_engine`](../../fusion/simulation_engine.py) contains the ordered step controller. The owning session provides the initial CARLA frame and SUMO time after setup, the fixed step length, and operations to advance SUMO, synchronize traffic and tick CARLA. One successful call returns an immutable step index, SUMO time and CARLA frame ID. A discontinuity or a failed operation invalidates the session. An RPC timeout can occur after an operation has already taken effect, so the lifecycle owner must tear down the session and start a fresh one using new baselines. The engine returns after the CARLA tick and contains no sensor waits.
 
-The existing CLI and GUI still use the legacy path. Wiring the new controller requires a coordinator-owned CARLA client, a managed TraCI session, acknowledged actor updates and a capture interface that can consume frames without ticking. This keeps the first component independently testable.
+## Live traffic session
+
+[`fusion.traffic_session`](../../fusion/traffic_session.py) runs the engine on the existing Free Flow scenario. It builds files in a run-scoped temporary directory and uses one headless SUMO child. The [SUMO adapter](../../fusion/sumo_adapter.py) establishes a private TraCI connection, queries the effective timestep, and tracks and reaps its child even if initialization fails. A connection-scoped socket timeout bounds TraCI reads. TraCI 1.28 exposes this socket through a private field, so retest that behavior when upgrading TraCI.
+
+The [CARLA adapter](../../fusion/carla_adapter.py) requires a dedicated, idle `Town10HD_Opt` endpoint. It checks the client/server build identifiers and rejects a world already in synchronous mode. After taking a copy of the world settings, it applies and verifies synchronous mode and the effective SUMO timestep. CARLA can tick internally while it applies a new fixed delta, so the engine samples its frame origin after settings settle. Each subsequent tick checks the returned frame against its world snapshot and verifies the actual delta. [CARLA 0.9.16 implementation](https://github.com/carla-simulator/carla/blob/0.9.16/LibCarla/source/carla/client/World.cpp)
+
+The session restores the saved CARLA settings on normal completion, startup errors and handled interrupts. It then closes TraCI and waits for the specific SUMO child, killing it if it exceeds the grace period. A hard-killed coordinator can still leave CARLA synchronous and requires recovery on that endpoint. Setup and stepping require exclusive access to the CARLA clock.
+
+The command is a live clock and lifecycle check. Traffic runs in SUMO, and the coordinator reads its state before each CARLA tick. The scenario controller, actor mirror and traffic-light mapping come in the next increment. The dataset CLI and GUI use the legacy implementation while v2 gains capture support.
 
 ## Next interfaces and remaining decisions
 

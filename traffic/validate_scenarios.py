@@ -56,12 +56,12 @@ def sumo_binary() -> str:
 
 
 def build_files(scenario_id, density, duration, direction, ambient_vehicles,
-                pedestrians, bicycles, seed, step_length):
+                pedestrians, bicycles, seed, step_length, *, temp_dir=None):
     meta = runner.SCENARIOS[scenario_id]
     vph = runner.scenario_vph(scenario_id, runner.density_to_vph(density))
     density_map = runner.build_density_map(vph, direction)
     route_file = runner.substitute_density(
-        os.path.join(runner.ROUTES_DIR, meta["file"]), density_map, duration)
+        os.path.join(runner.ROUTES_DIR, meta["file"]), density_map, duration, temp_dir=temp_dir)
     city_mode = bool(ambient_vehicles or pedestrians or bicycles)
     if city_mode:
         with open(route_file, "r", encoding="utf-8") as f:
@@ -74,11 +74,11 @@ def build_files(scenario_id, density, duration, direction, ambient_vehicles,
     add_files = [runner.ADD_FILE]
     busstop = None
     if scenario_id == 5:
-        busstop = runner.write_busstop_additional()
+        busstop = runner.write_busstop_additional(temp_dir=temp_dir)
         add_files.append(busstop)
     cfg = runner.write_sumocfg(runner.NET_FILE, route_file, add_files, duration,
                                step_length=step_length,
-                               ignore_route_errors=city_mode, seed=seed)
+                               ignore_route_errors=city_mode, seed=seed, temp_dir=temp_dir)
     tmp = [route_file, cfg] + ([busstop] if busstop else [])
     return cfg, tmp
 
