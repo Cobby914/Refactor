@@ -133,7 +133,7 @@ def _link_class(in_lane, out_lane, via_lane, corridor, crossings):
 def apply_corridor_priority(net_file: str, *, green_s: float = DEFAULT_GREEN_S,
                             cross_green_s: float = DEFAULT_CROSS_GREEN_S,
                             split_s: float = DEFAULT_SPLIT_S,
-                            verbose: bool = True, **_ignored):
+                            verbose: bool = True, connection=None, **_ignored):
     """Re-time the imported program of every traffic light on the corridor.
 
     The imported programs (10 phases here: main green, green extension, amber,
@@ -161,6 +161,7 @@ def apply_corridor_priority(net_file: str, *, green_s: float = DEFAULT_GREEN_S,
     light starts in its corridor phase). Call after traci.start(). Returns the
     list of TLS ids changed.
     """
+    trafficlight = (traci if connection is None else connection).trafficlight
     corridor = _corridor_edges()
     exits = _exit_edges()
     crossings = _crossing_edges_from_net(net_file)
@@ -169,8 +170,8 @@ def apply_corridor_priority(net_file: str, *, green_s: float = DEFAULT_GREEN_S,
     plans = []
     installed = {}
     link_info = {}
-    for tls in traci.trafficlight.getIDList():
-        links = traci.trafficlight.getControlledLinks(tls)
+    for tls in trafficlight.getIDList():
+        links = trafficlight.getControlledLinks(tls)
         if not links:
             continue
         classes = []
@@ -191,7 +192,7 @@ def apply_corridor_priority(net_file: str, *, green_s: float = DEFAULT_GREEN_S,
         side_idx = [i for i, c in enumerate(classes) if c == "side"]
         if not straight_idx:
             continue
-        logics = traci.trafficlight.getAllProgramLogics(tls)
+        logics = trafficlight.getAllProgramLogics(tls)
         if not logics:
             continue
         base = logics[0]
@@ -268,11 +269,11 @@ def apply_corridor_priority(net_file: str, *, green_s: float = DEFAULT_GREEN_S,
                         if st[k] == "r":
                             st[k] = "g"
                 state = "".join(st)
-            phases.append(traci.trafficlight.Phase(dur, state, p.minDur, p.maxDur))
-        logic = traci.trafficlight.Logic(PROGRAM_ID, base.type, cor_phase, phases)
-        traci.trafficlight.setProgramLogic(tls, logic)
-        traci.trafficlight.setProgram(tls, PROGRAM_ID)
-        traci.trafficlight.setPhase(tls, cor_phase)
+            phases.append(trafficlight.Phase(dur, state, p.minDur, p.maxDur))
+        logic = trafficlight.Logic(PROGRAM_ID, base.type, cor_phase, phases)
+        trafficlight.setProgramLogic(tls, logic)
+        trafficlight.setProgram(tls, PROGRAM_ID)
+        trafficlight.setPhase(tls, cor_phase)
         changed.append(tls)
         installed[tls] = (phases, cor_phase, side_phase, kind)
         if verbose:
@@ -281,13 +282,13 @@ def apply_corridor_priority(net_file: str, *, green_s: float = DEFAULT_GREEN_S,
                   f"cycle {sum(p.duration for p in phases):.0f}s "
                   f"({n_links} corridor through-links)")
     if installed and os.environ.get("DATASET_SIGNAL_GREEN_WAVE", "1").strip() not in ("0", "false", "no"):
-        _green_wave_offsets(net_file, installed, link_info, verbose)
+        _green_wave_offsets(net_file, installed, link_info, verbose, trafficlight)
     if verbose and not changed:
         print("[signals] no corridor traffic lights found; programs unchanged")
     return changed
 
 
-def _green_wave_offsets(net_file, installed, link_info, verbose):
+def _green_wave_offsets(net_file, installed, link_info, verbose, trafficlight):
     """Offset each through light so its red window falls between the platoons
     a split light releases into the corridor (a one-direction green wave).
 
@@ -365,8 +366,8 @@ def _green_wave_offsets(net_file, installed, link_info, verbose):
                 remaining += s_cycle
             remaining = min(remaining, t_phases[t_cor].duration)
             try:
-                traci.trafficlight.setPhase(t_tls, t_cor)
-                traci.trafficlight.setPhaseDuration(t_tls, remaining)
+                trafficlight.setPhase(t_tls, t_cor)
+                trafficlight.setPhaseDuration(t_tls, remaining)
             except traci.TraCIException:
                 continue
             if verbose:

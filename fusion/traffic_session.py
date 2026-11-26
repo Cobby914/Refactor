@@ -1,9 +1,10 @@
-"""Run the v2 clocks against headless SUMO traffic and an idle CARLA world."""
+"""Run headless SUMO scenarios with traffic mirrored into an idle CARLA world."""
 
 from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from math import ceil, isclose, isfinite
 from pathlib import Path
@@ -20,6 +21,8 @@ from .sumo_adapter import open_sumo_session
 class TrafficRun:
     final_frame: SimulationFrame
     peak_sumo_vehicles: int
+    peak_carla_actors: int
+    spawn_collisions: int
     sumo_pid: int
     sumo_version: str
     carla_version: str
@@ -34,9 +37,13 @@ def run_traffic(
     carla_port: int = 2000,
     ready_timeout_s: float = 30.0,
     rpc_timeout_s: float = 5.0,
+    scenario: int = 1,
+    seed: int = 42,
+    render_radius: float | None = 150.0,
+    stretch_signals: str = "green",
     on_frame: Callable[[SimulationFrame], None] | None = None,
 ) -> TrafficRun:
-    """Pair SUMO traffic steps with CARLA frames and release both on exit."""
+    """Advance a scenario and verify its traffic and signals before publishing frames."""
     if type(steps) is not int or steps < 1:
         raise ValueError("steps must be a positive integer")
     if not 1 <= carla_port <= 65535:
@@ -47,7 +54,16 @@ def run_traffic(
     ):
         if not isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be finite and positive")
+    if render_radius is not None and (not isfinite(render_radius) or render_radius <= 0):
+        raise ValueError("render radius must be finite and positive")
+    if stretch_signals not in ("green", "static"):
+        raise ValueError("stretch signals must be green or static")
 
+    from traffic.runner import NET_FILE, SCENARIOS, get_controller, spawn_buses_with_stop
+    from traffic.stretch_signals import apply_corridor_priority
+
+    if scenario not in SCENARIOS:
+        raise ValueError(f"unknown scenario {scenario}")
     timeouts = {"ready_timeout_s": ready_timeout_s, "rpc_timeout_s": rpc_timeout_s}
     with open_sumo_session(config_path, **timeouts) as sumo:
         if not isclose(sumo.fixed_delta_s, step_length_s, rel_tol=0, abs_tol=1e-9):
@@ -55,28 +71,59 @@ def run_traffic(
                 f"SUMO effective step {sumo.fixed_delta_s:g}s differs from requested "
                 f"{step_length_s:g}s. Use a step length representable in whole milliseconds."
             )
-        with open_carla_session(carla_host, carla_port, sumo.fixed_delta_s, **timeouts) as carla:
-            peak_sumo_vehicles = 0
+        with ExitStack() as resources:
+            carla = resources.enter_context(open_carla_session(
+                carla_host, carla_port, sumo.fixed_delta_s, **timeouts,
+            ))
+            from .actor_mirror import ActorMirror
+            from .traffic_light_mirror import TrafficLightMirror
 
-            def observe_traffic():
-                nonlocal peak_sumo_vehicles
-                peak_sumo_vehicles = max(
-                    peak_sumo_vehicles, sumo.connection.vehicle.getIDCount()
-                )
+            connection = sumo.connection
+            duration = ceil(steps * step_length_s)
+            if stretch_signals == "green":
+                apply_corridor_priority(NET_FILE, connection=connection, verbose=False)
+            controller = get_controller(scenario, duration, connection=connection)
+            resources.callback(controller.on_stop)
+            controller.on_start()
+            if scenario == 5:
+                spawn_buses_with_stop(duration, connection=connection)
+
+            lights = TrafficLightMirror(carla, connection)
+            resources.callback(lights.close)
+            lights.start()
+            mirror = ActorMirror(carla, connection, seed=seed, render_radius=render_radius)
+            resources.callback(mirror.close)
+            peak_sumo_vehicles = 0
+            peak_carla_actors = 0
+
+            def synchronize_traffic():
+                nonlocal peak_sumo_vehicles, peak_carla_actors
+                controller.step()
+                peak_sumo_vehicles = max(peak_sumo_vehicles, mirror.step())
+                peak_carla_actors = max(peak_carla_actors, len(mirror.actor_ids))
+                lights.step()
+
+            def tick_and_verify():
+                frame = carla.tick()
+                lights.verify()
+                return frame
 
             engine = SimulationEngine(
                 fixed_delta_s=sumo.fixed_delta_s,
                 initial_sumo_time_s=sumo.initial_time_s,
-                initial_carla_frame=carla.initial_frame,
+                initial_carla_frame=carla.world.get_snapshot().frame,
                 advance_sumo=sumo.advance,
-                sync_traffic=observe_traffic,
-                tick_carla=carla.tick,
+                sync_traffic=synchronize_traffic,
+                tick_carla=tick_and_verify,
             )
             for _ in range(steps):
                 frame = engine.step()
                 if on_frame is not None:
                     on_frame(frame)
-            return TrafficRun(frame, peak_sumo_vehicles, sumo.pid, sumo.version, carla.version)
+            return TrafficRun(
+                frame, peak_sumo_vehicles, peak_carla_actors, mirror.spawn_collisions,
+                sumo.pid, sumo.version, carla.version,
+            )
 
 
 def main() -> int:
@@ -87,20 +134,43 @@ def main() -> int:
     parser.add_argument("--step-length", type=float, default=0.05)
     parser.add_argument("--ready-timeout", type=float, default=30.0)
     parser.add_argument("--rpc-timeout", type=float, default=5.0)
+    parser.add_argument("--scenario", type=int, choices=range(1, 12), default=1)
+    parser.add_argument("--density", type=int, default=60)
+    parser.add_argument("--direction", choices=("WB", "EB", "BOTH"), default="BOTH")
+    parser.add_argument("--ambient-vehicles", type=int, default=0)
+    parser.add_argument("--pedestrians", type=int, default=0)
+    parser.add_argument("--bicycles", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--render-radius", type=float, default=150.0)
+    parser.add_argument("--no-cull", action="store_true")
+    parser.add_argument("--stretch-signals", choices=("green", "static"), default="green")
     args = parser.parse_args()
+    if not 1 <= args.density <= 100:
+        parser.error("--density must be between 1 and 100")
+    if min(args.ambient_vehicles, args.pedestrians, args.bicycles) < 0:
+        parser.error("ambient actor counts must be nonnegative")
     try:
-        from traffic.validate_scenarios import build_files
+        from traffic.validate_scenarios import ambient_traffic, build_files, runner
 
         with TemporaryDirectory(prefix="scalesense-v2-") as temp_dir:
-            config, _ = build_files(
-                scenario_id=1, density=60, duration=ceil(args.steps * args.step_length),
-                direction="BOTH", ambient_vehicles=0, pedestrians=0, bicycles=0,
-                seed=42, step_length=args.step_length, temp_dir=temp_dir,
+            config, [route_file, *_] = build_files(
+                scenario_id=args.scenario, density=args.density,
+                duration=ceil(args.steps * args.step_length), direction=args.direction,
+                ambient_vehicles=args.ambient_vehicles, pedestrians=args.pedestrians,
+                bicycles=args.bicycles, seed=args.seed, step_length=args.step_length, temp_dir=temp_dir,
             )
+            violations = ambient_traffic.check_spawn_exclusion(
+                runner.NET_FILE, Path(route_file).read_text(encoding="utf-8"),
+            )
+            if violations:
+                raise ValueError("spawn/despawn inside the radar zone: " + ", ".join(violations))
             run = run_traffic(
                 Path(config), steps=args.steps, step_length_s=args.step_length,
                 carla_host=args.carla_host, carla_port=args.carla_port,
                 ready_timeout_s=args.ready_timeout, rpc_timeout_s=args.rpc_timeout,
+                scenario=args.scenario, seed=args.seed,
+                render_radius=None if args.no_cull else args.render_radius,
+                stretch_signals=args.stretch_signals,
             )
     except KeyboardInterrupt:
         print("Traffic session interrupted.", file=sys.stderr)
@@ -113,8 +183,11 @@ def main() -> int:
     print(f"CARLA {run.carla_version}, {run.sumo_version} (PID {run.sumo_pid})")
     print(
         f"Paired {frame.step} steps through SUMO t={frame.sumo_time_s:g}s and CARLA "
-        f"frame {frame.carla_frame}. Peak SUMO vehicles: {run.peak_sumo_vehicles}."
+        f"frame {frame.carla_frame}. Peak SUMO vehicles: {run.peak_sumo_vehicles}. "
+        f"Peak CARLA mirrors: {run.peak_carla_actors}."
     )
+    if run.spawn_collisions:
+        print(f"Deferred {run.spawn_collisions} actor spawns because of collision.")
     return 0
 
 

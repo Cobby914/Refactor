@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from fusion.carla_adapter import open_carla_session
 from fusion.traffic_session import run_traffic
+from traffic.carla_sync import BIKE_BLUEPRINTS
 from traffic.validate_scenarios import build_files
 
 
@@ -47,6 +48,12 @@ class LiveTrafficSessionTests(unittest.TestCase):
     def assert_session_released(self, expected_children):
         self.assertEqual(self.client.get_world().id, self.world.id)
         self.assertEqual(self.world.get_settings(), self.original_settings)
+        actors = self.world.get_actors()
+        self.assertFalse(any(
+            actor.attributes.get("role_name", "").startswith("scalesense-v2:")
+            for actor in actors
+        ))
+        self.assertFalse(any(light.is_frozen() for light in actors.filter("traffic.traffic_light*")))
         self.assertEqual(len(self.processes), expected_children)
         for process in self.processes:
             self.assertIsNotNone(process.returncode, f"unreaped SUMO process {process.pid}")
@@ -114,4 +121,40 @@ class LiveTrafficSessionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "CARLA is already synchronous"):
                 self.run_session(steps=1)
             self.assertTrue(self.world.get_settings().synchronous_mode)
+        self.assert_session_released(1)
+
+    def test_cars_bicycles_and_walkers_move_as_corridor_aspects_change(self):
+        self.config = Path(build_files(
+            scenario_id=1, density=60, duration=40, direction="BOTH", ambient_vehicles=3,
+            pedestrians=12, bicycles=8, seed=42, step_length=0.05, temp_dir=self.config.parent,
+        )[0])
+        origins = {}
+        moved = set()
+        aspects = set()
+        traffic_lights = sorted(
+            self.world.get_actors().filter("traffic.traffic_light*"), key=lambda light: light.id,
+        )
+
+        def observe(frame):
+            if frame.step % 10:
+                return
+            for actor in self.world.get_actors():
+                role = actor.attributes.get("role_name", "")
+                if not role.startswith("scalesense-v2:"):
+                    continue
+                category = "car"
+                if actor.type_id.startswith("walker."):
+                    category = "walker"
+                elif actor.type_id in BIKE_BLUEPRINTS:
+                    category = "bicycle"
+                position = actor.get_location()
+                start = origins.setdefault(actor.id, position)
+                if position.distance(start) > 0.25:
+                    moved.add(category)
+            aspects.add(tuple(str(light.get_state()) for light in traffic_lights))
+
+        result = self.run_session(steps=800, render_radius=None, on_frame=observe)
+        self.assertGreater(result.peak_carla_actors, 3)
+        self.assertEqual(moved, {"car", "bicycle", "walker"})
+        self.assertGreater(len(aspects), 1)
         self.assert_session_released(1)

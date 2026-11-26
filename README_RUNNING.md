@@ -84,15 +84,15 @@ GUI version: `python traffic/gui_launcher.py`.
 
 If a hard-killed run left actors behind: `python traffic/clear_carla_actors.py --walkers`.
 
-### V2 live clock check
+### V2 traffic-only co-simulation
 
-Use a dedicated asynchronous CARLA server on `Town10HD_Opt`. The command runs 200 paired steps with headless SUMO at 20 Hz and reports the final CARLA frame and peak SUMO vehicle count. Actor mirroring comes in the next increment.
+Use a dedicated asynchronous CARLA server on `Town10HD_Opt`. The command runs the selected scenario in headless SUMO and mirrors its actors and corridor signal aspects into CARLA. It reports the paired frame count, peak actor counts and any deferred collision spawns.
 
 ```bash
-python -m fusion.traffic_session --carla-port 2000 --steps 200 --step-length 0.05
+python -m fusion.traffic_session --carla-port 2000 --scenario 1 --steps 800 --step-length 0.05 --pedestrians 12 --bicycles 8
 ```
 
-Use `--ready-timeout` for simulator startup and `--rpc-timeout` for simulator calls. The command restores CARLA's original world settings and closes its SUMO child on exit. See the [refactor progress](docs/refactor/PROGRESS.md) for integration checks.
+The default mirror radius is 150 m. Use `--render-radius` to change it or `--no-cull` to mirror the whole map. `--stretch-signals static` uses the imported SUMO signal programs. Use `--ready-timeout` for simulator startup and `--rpc-timeout` for simulator calls. The command cleans up its actors and SUMO child, restores CARLA settings, and returns control of the signals to CARLA on exit. Capture and campaign integration are separate milestones. [Refactor progress](docs/refactor/PROGRESS.md)
 
 ## 5. Record a dataset (one scenario)
 

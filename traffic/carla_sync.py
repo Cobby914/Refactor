@@ -58,6 +58,7 @@ THIS VERSION also carries three fixes from earlier debugging passes:
    above -- the heading match is now meaningful for N-S approaches too.)
 """
 
+import hashlib
 import math
 import os
 import time
@@ -76,7 +77,10 @@ except ImportError:
 # Shared vehicle-cleanup helper. Guarded so carla_sync still imports even if
 # the file is missing -- in that case start/stop just skip the world wipe.
 try:
-    from carla_cleanup import destroy_all_vehicles
+    if __package__:
+        from .carla_cleanup import destroy_all_vehicles
+    else:
+        from carla_cleanup import destroy_all_vehicles
 except ImportError:
     destroy_all_vehicles = None
 
@@ -236,12 +240,10 @@ PED_OBSTACLE_LABELS = ("Poles", "TrafficLight", "TrafficSigns")
 PED_OBSTACLE_MAX_HALF_M = 0.6
 PED_OBSTACLE_CLEARANCE_M = 0.4
 
-from pedestrian_path import (  # noqa: E402
-    crossing_will_be_real,
-    is_walking_area,
-    next_pose,
-    sidewalk_query_point,
-)
+if __package__:
+    from . import pedestrian_path
+else:
+    import pedestrian_path
 
 # Centre of the CARLA render radius (monitored-stretch midpoint in CARLA
 # world coords) and default radius. SUMO simulates the WHOLE city so traffic
@@ -273,10 +275,12 @@ class CarlaSyncManager:
                  center=DEFAULT_CENTER_CARLA,
                  render_radius: float = DEFAULT_RENDER_RADIUS,
                  cull: bool = True,
-                 mirror_pedestrians: bool = True):
+                 mirror_pedestrians: bool = True, *, connection=None, seed=None):
         self.host    = carla_host
         self.port    = carla_port
         self.timeout = timeout
+        self._connection = traci if connection is None else connection
+        self._seed = seed
 
         # Render-radius cull. When cull is True, only actors within
         # render_radius metres of center (CARLA world coords) are spawned in
@@ -320,18 +324,23 @@ class CarlaSyncManager:
         # retrying silently forever.
         self._spawn_fail_count = {}
 
+    def attach_world(self, world, client=None):
+        """Load geometry and blueprints from an existing world."""
+        self._client = client
+        self._world = world
+        self._map = world.get_map()
+        self._blueprints = world.get_blueprint_library()
+        if self._mirror_peds:
+            self._load_walkable_geometry()
+
     def start(self):
         print(f"[CarlaSyncManager] Connecting to CARLA at {self.host}:{self.port} ...")
         try:
-            self._client     = carla.Client(self.host, self.port)
-            self._client.set_timeout(self.timeout)
-            self._world      = self._client.get_world()
-            self._map        = self._world.get_map()
-            self._blueprints = self._world.get_blueprint_library()
+            client = carla.Client(self.host, self.port)
+            client.set_timeout(self.timeout)
+            self.attach_world(client.get_world(), client)
             self._connected  = True
             print(f"[CarlaSyncManager] Connected. Map: {self._map.name}")
-            if self._mirror_peds:
-                self._load_walkable_geometry()
 
             # Wipe any leftover/parked vehicles BEFORE we mirror anything.
             # Leaked actors from a prior crashed run, or Town10HD_Opt's own
@@ -494,7 +503,7 @@ class CarlaSyncManager:
             batch = []
             for vid in visible & carla_ids:
                 try:
-                    tr = self._sumo_transform(vid)
+                    tr = self.vehicle_transform(vid)
                     loc = tr.location
                     # Never push a non-finite transform: a NaN/inf pose applied
                     # server-side can hard-crash CARLA. Skip it this step.
@@ -570,13 +579,17 @@ class CarlaSyncManager:
 
         print("[CarlaSyncManager] Done.")
 
-    def _get_blueprint(self, vid: str) -> carla.ActorBlueprint:
+    def vehicle_blueprint(self, vid: str) -> carla.ActorBlueprint:
         vtype = self._vtype_map.get(vid)
         if vtype is None:
             try:
-                vtype = traci.vehicle.getTypeID(vid)
+                vtype = self._connection.vehicle.getTypeID(vid)
             except Exception:
+                if self._connection is not traci:
+                    raise
                 vtype = "car"
+            if self._connection is not traci:
+                vtype = vtype.split("@", 1)[0]
             self._vtype_map[vid] = vtype
         is_bike = vtype in BIKE_VTYPES
         bp = None
@@ -629,7 +642,7 @@ class CarlaSyncManager:
         vehicles drift; that bug is fixed and the transform is verified to
         0.01 m, so there is nothing left for it to correct. We now trust the
         computed position -- exactly as the internal-lane branch in
-        _sumo_transform already did -- and use the waypoint for Z only.
+        vehicle_transform already did -- and use the waypoint for Z only.
 
         The distance check is kept, but purely as a diagnostic: a far-away
         nearest waypoint means our transform and CARLA's road graph disagree
@@ -665,9 +678,9 @@ class CarlaSyncManager:
 
         return x, y, loc.z + GROUND_CLEARANCE, wp, dist <= MAX_SNAP_DISTANCE
 
-    def _sumo_transform(self, vid: str, log_delta: bool = False):
-        x, y    = traci.vehicle.getPosition(vid)
-        heading = traci.vehicle.getAngle(vid)
+    def vehicle_transform(self, vid: str, log_delta: bool = False, *, position=None):
+        x, y = self._connection.vehicle.getPosition(vid) if position is None else position
+        heading = self._connection.vehicle.getAngle(vid)
         raw_cx, raw_cy, yaw = sumo_to_carla_xy_yaw(x, y, heading)
 
         # SUMO models the actual turning path through an intersection
@@ -682,8 +695,10 @@ class CarlaSyncManager:
         # (still ground-snapped for Z) instead of forcing a lane-center
         # snap that doesn't apply here.
         try:
-            on_internal_lane = traci.vehicle.getLaneID(vid).startswith(":")
+            on_internal_lane = self._connection.vehicle.getLaneID(vid).startswith(":")
         except Exception:
+            if self._connection is not traci:
+                raise
             on_internal_lane = False
 
         if on_internal_lane:
@@ -730,8 +745,8 @@ class CarlaSyncManager:
 
     def _spawn(self, vid: str):
         try:
-            bp        = self._get_blueprint(vid)
-            transform = self._sumo_transform(vid, log_delta=True)
+            bp        = self.vehicle_blueprint(vid)
+            transform = self.vehicle_transform(vid, log_delta=True)
 
             actor = None
             for extra_z in SPAWN_RETRY_EXTRA_Z:
@@ -774,7 +789,7 @@ class CarlaSyncManager:
 
     def _move(self, vid: str):
         try:
-            self._actors[vid].set_transform(self._sumo_transform(vid))
+            self._actors[vid].set_transform(self.vehicle_transform(vid))
         except Exception as e:
             print(f"[CarlaSyncManager] Move error for {vid}: {e}")
 
@@ -952,7 +967,7 @@ class CarlaSyncManager:
             self._ped_ground_cache[key] = z
         return z
 
-    def _person_transform(self, pid: str) -> carla.Transform:
+    def walker_transform(self, pid: str, *, position=None) -> carla.Transform:
         """Place a walker on the CARLA pavement they are already on, then walk.
 
         The sidewalk lookup starts at the locked point plus the step SUMO just
@@ -964,18 +979,20 @@ class CarlaSyncManager:
         keeps both position and heading. Ground height is the raycast at the
         rendered point.
         """
-        x, y = traci.person.getPosition(pid)
-        heading = traci.person.getAngle(pid)
+        x, y = self._connection.person.getPosition(pid) if position is None else position
+        heading = self._connection.person.getAngle(pid)
         cx, cy, sumo_yaw = sumo_to_carla_xy_yaw(x, y, heading)
         try:
-            lane = traci.person.getLaneID(pid)
+            lane = self._connection.person.getLaneID(pid)
         except traci.TraCIException:
+            if self._connection is not traci:
+                raise
             lane = ""
         state = self._ped_state.get(pid)
         raw = (cx, cy)
         nearest = None
         nearest_lane = None
-        if is_walking_area(lane):
+        if pedestrian_path.is_walking_area(lane):
             # Never the raw position: the zebra if SUMO is already on it,
             # otherwise the nearest CARLA pavement, lane lock ignored so the
             # walker can follow the kerb onto the next sidewalk round a corner.
@@ -986,8 +1003,8 @@ class CarlaSyncManager:
                 if found is not None:
                     nearest = (found[0], found[1])
                     nearest_lane = (found[2], found[3])
-        elif not crossing_will_be_real(state, lane):
-            qx, qy = sidewalk_query_point(
+        elif not pedestrian_path.crossing_will_be_real(state, lane):
+            qx, qy = pedestrian_path.sidewalk_query_point(
                 raw,
                 None if state is None else state.get("locked"),
                 None if state is None else state.get("prev_raw"),
@@ -996,7 +1013,7 @@ class CarlaSyncManager:
             if found is not None:
                 nearest = (found[0], found[1])
                 nearest_lane = (found[2], found[3])
-        sx, sy, yaw, state = next_pose(
+        sx, sy, yaw, state = pedestrian_path.next_pose(
             raw, sumo_yaw, lane, nearest, nearest_lane, state, PED_SNAP_MAX_M)
         # Off zebras, steer round poles; the pushed point is where the body is.
         if not self._on_zebra(sx, sy):
@@ -1044,20 +1061,35 @@ class CarlaSyncManager:
             return None
         return found
 
-    def _walker_blueprint(self, pid: str) -> carla.ActorBlueprint:
+    def walker_blueprint(self, pid: str) -> carla.ActorBlueprint:
         walkers = self._blueprints.filter(WALKER_FILTER)
-        # Deterministic pick per pedestrian id so a given ped keeps one look.
-        bp = walkers[hash(pid) % len(walkers)]
+        if self._seed is None:
+            index = hash(pid)
+        else:
+            walkers = sorted(walkers, key=lambda blueprint: blueprint.id)
+            digest = hashlib.blake2b(f"{self._seed}:{pid}".encode(), digest_size=8).digest()
+            index = int.from_bytes(digest, "big")
+        bp = walkers[index % len(walkers)]
         if bp.has_attribute("is_invincible"):
             bp.set_attribute("is_invincible", "false")
         if bp.has_attribute("role_name"):
             bp.set_attribute("role_name", f"sumo_{pid}")
         return bp
 
+    def set_walker_height(self, pid: str, half_height: float) -> None:
+        self._ped_half_height[pid] = half_height
+
+    def forget_actor_geometry(self, kind: str, actor_id: str) -> None:
+        if kind == "walker":
+            self._ped_state.pop(actor_id, None)
+            self._ped_half_height.pop(actor_id, None)
+        else:
+            self._vtype_map.pop(actor_id, None)
+
     def _spawn_person(self, pid: str):
         try:
-            bp = self._walker_blueprint(pid)
-            transform = self._person_transform(pid)
+            bp = self.walker_blueprint(pid)
+            transform = self.walker_transform(pid)
             actor = None
             for extra_z in SPAWN_RETRY_EXTRA_Z:
                 attempt = carla.Transform(
@@ -1078,13 +1110,13 @@ class CarlaSyncManager:
                     self._ped_half_height[pid] = PED_DEFAULT_HALF_HEIGHT
                 # Re-place immediately with the real half height (the spawn
                 # attempt used the default and possibly an extra_z lift).
-                actor.set_transform(self._person_transform(pid))
+                actor.set_transform(self.walker_transform(pid))
         except Exception as e:
             print(f"[CarlaSyncManager] Person spawn error for {pid}: {e}")
 
     def _move_person(self, pid: str):
         try:
-            self._ped_actors[pid].set_transform(self._person_transform(pid))
+            self._ped_actors[pid].set_transform(self.walker_transform(pid))
         except Exception as e:
             print(f"[CarlaSyncManager] Person move error for {pid}: {e}")
 

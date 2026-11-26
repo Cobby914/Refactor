@@ -54,3 +54,7 @@ Line anchors refer to the legacy files. `rg -n '\.tick\(|wait_for_tick\(|\.simul
 ## Live verification in Step 2
 
 The offscreen test server reported the same CARLA build as the installed client and ran `Town10HD_Opt`. The v2 clock path adds one explicit CARLA tick and one private TraCI step. Live tests verified restoration of CARLA settings and exit of the owned SUMO process on normal completion, an injected startup failure and interruption. These checks cover the new standalone session. The legacy capture freeze, GPU sensor latency and campaign restart paths still require separate live verification. [Verification log](PROGRESS.md#2026-11-26--step-2)
+
+## Actor and signal findings in Step 3
+
+CARLA and SUMO use different identifiers for corridor signals. Mapping the physical heads required checking the live stop waypoints against SUMO's controlled approaches. Corresponding waypoints were within 6.3 m of the sampled SUMO lane ends, including CARLA landmark 951 on road 16 and SUMO approach 15. CARLA exposes approach colors, while SUMO can assign separate states to turn and pedestrian movements. A separate CARLA frame may be required before its actor list reflects a newly committed spawn. The v2 mirror uses session tags to recover those actors if CARLA committed a spawn whose response was lost. [Architecture](ARCHITECTURE.md#scenario-actor-and-signal-synchronization)
