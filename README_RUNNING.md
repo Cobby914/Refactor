@@ -103,6 +103,16 @@ python run_fusion.py --scenario 3 --density 60 --duration 300 --radars 8 --rate-
 Output goes to `dataset/Data/sensor_capture_<timestamp>/`. Labeling and
 post-processing run automatically (`--no-label`, `--no-postprocess` to skip).
 
+### V2 single-run capture
+
+Set `--capture-dir` to a new directory and use a dedicated CARLA server with rendering enabled. The v2 command uses the existing roadside layout and accepts total or per-side radar counts.
+
+```bash
+python -m fusion.traffic_session --scenario 1 --steps 600 --radars 8 --ambient-vehicles 30 --capture-dir dataset/Data/sensor_capture_v2_example --label
+```
+
+The output includes the existing radar and camera CSVs, camera PNGs, actor geometry and sensor extrinsics. `capture_frames.jsonl` lists the received and missing sensors for each paired frame. `run_meta.json` summarizes completion and stream coverage. `--label` runs the existing offline labeler. `--postprocess` also runs Doppler and RCS processing, which requires matched radar returns for calibration.
+
 ## 6. Record a campaign (several scenarios, one capture)
 
 Write a campaign file (or save one from `python fusion_gui.py`).

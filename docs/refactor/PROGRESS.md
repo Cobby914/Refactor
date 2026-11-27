@@ -76,3 +76,22 @@ The current signal mapping covers vehicle approach colors at the three corridor 
 ### Next increment
 
 Join delayed radar and camera callbacks to exact-frame ground truth using the paired frame ID. Test missing and late sensor messages before connecting the existing dataset writers.
+
+## 2026-11-26 · Step 4
+
+- Added opt-in [v2 single-run capture](../../README_RUNNING.md#v2-single-run-capture) using the existing CARLA sensor rig and dataset formats. The frame manifest adds coverage for every expected sensor, including zero-return radar scans.
+- Joined callbacks to confirmed CARLA frames using a bounded buffer and moved dataset export to an eight-frame writer queue. Normal teardown allows pending camera frames to arrive before it releases the rig and simulator resources.
+
+| Command or check | Result |
+| --- | --- |
+| `python -B -m unittest discover -s tests -v` | All 16 tests passed. New checks cover early and out-of-order callbacks, duplicate suppression, expired and final frames, exact camera metadata, and writer error propagation. |
+| `python -B -m unittest discover -s tests/integration -v` with `SCALESENSE_TEST_CARLA_PORT=22000` | All 10 tests passed. The 4-, 8-, 12- and 14-radar setups each produced 32 complete paired frames on CARLA 0.9.16. PNGs, frame IDs, actor metadata and sensor extrinsics were verified. The interruption test retained the three confirmed frames and released all owned actors. |
+| Capture-specific integration rerun | The legacy labeler also processed all four layout captures with zero missing actor frames. |
+| Legacy CSV schema comparison and `python -B -m unittest discover -s traffic/tests -v` | Both CSV header definitions and the fast radar return writer matched the preceding Git revision. All 21 legacy traffic tests passed. |
+| 600-frame v2 S01 capture with 4 radars at 1,200 points/s, 30 ambient vehicles, 12 pedestrians, 8 bicycles, and `--postprocess` | All 600 frames had every sensor. The labeler processed 112,544 radar returns with zero missing actor frames and 779 matches. The Doppler/RCS stage completed. The PointNet frame builder produced 600 frames and 100,187 points. |
+
+The initial sparse 48-frame verification capture had zero matched returns. The legacy postprocessor reported its existing calibration error for that capture, and the populated 600-frame run exercised postprocessing successfully. Final cleanup restored CARLA settings and signal timing, removed the owned actors and sensors, and reaped SUMO. The isolated CARLA server was stopped.
+
+### Next increment
+
+Route the v2 session through the existing campaign and GUI entry points. Anchor recording windows to confirmed paired frames and preserve each campaign row's metadata and output format.

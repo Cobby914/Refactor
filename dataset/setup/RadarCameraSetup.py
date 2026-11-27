@@ -183,6 +183,31 @@ def draw_camera_fov(world, transform, camera_range, horizontal_fov_deg, life_tim
         world.debug.draw_line(arc_points[i], arc_points[i + 1], 0.04, color, life_time)
 
 
+def configure_dataset_camera_blueprint(camera_bp):
+    if DISABLE_CAMERA_POSTPROCESS_EFFECTS:
+        if camera_bp.has_attribute("enable_postprocess_effects"):
+            camera_bp.set_attribute("enable_postprocess_effects", "false")
+        if camera_bp.has_attribute("bloom_intensity"):
+            camera_bp.set_attribute("bloom_intensity", "0.0")
+        if camera_bp.has_attribute("lens_flare_intensity"):
+            camera_bp.set_attribute("lens_flare_intensity", "0.0")
+
+
+def dataset_camera_positions():
+    # Overview camera set back beyond the stretch, looking down the boulevard.
+    camera_positions = {"C10": stretch_camera_transform()}
+    for name, tr in list(camera_positions.items()):
+        camera_positions[name] = carla.Transform(
+            tr.location,
+            carla.Rotation(
+                pitch=tr.rotation.pitch,
+                yaw=normalize_angle(tr.rotation.yaw + 180.0),
+                roll=tr.rotation.roll,
+            ),
+        )
+    return camera_positions
+
+
 def main():
     client, world = get_world()
     try:
@@ -196,25 +221,8 @@ def main():
     bp_lib = world.get_blueprint_library()
 
     camera_bp = bp_lib.find("sensor.camera.rgb")
-    if DISABLE_CAMERA_POSTPROCESS_EFFECTS:
-        if camera_bp.has_attribute("enable_postprocess_effects"):
-            camera_bp.set_attribute("enable_postprocess_effects", "false")
-        if camera_bp.has_attribute("bloom_intensity"):
-            camera_bp.set_attribute("bloom_intensity", "0.0")
-        if camera_bp.has_attribute("lens_flare_intensity"):
-            camera_bp.set_attribute("lens_flare_intensity", "0.0")
-
-    # Overview camera set back beyond the stretch, looking down the boulevard.
-    camera_positions = {"C10": stretch_camera_transform()}
-    for name, tr in list(camera_positions.items()):
-        camera_positions[name] = carla.Transform(
-            tr.location,
-            carla.Rotation(
-                pitch=tr.rotation.pitch,
-                yaw=normalize_angle(tr.rotation.yaw + 180.0),
-                roll=tr.rotation.roll,
-            ),
-        )
+    configure_dataset_camera_blueprint(camera_bp)
+    camera_positions = dataset_camera_positions()
     camera_output_path = str(config_dir() / "camera_points_dataset.txt")
     with open(camera_output_path, "w", encoding="utf-8") as f:
         f.write("Camera points used in DatasetCreation.py\n\n")

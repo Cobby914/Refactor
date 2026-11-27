@@ -476,7 +476,7 @@ def get_radar_target_snapshots(world):
     return snapshots
 
 
-def make_fast_tick_snapshot_fn(world):
+def make_fast_tick_snapshot_fn(world, *, prune_absent=False):
     """Returns a ``(world, world_snapshot) -> list[dict]`` for ``TickActorSnapshotter``.
 
     The naive ``get_radar_target_snapshots(world)`` issues one CARLA RPC per
@@ -540,6 +540,10 @@ def make_fast_tick_snapshot_fn(world):
         }
 
     def fast_tick_snapshot(world, world_snapshot):
+        if prune_absent:
+            present = {int(actor.id) for actor in world_snapshot}
+            for actor_id in actor_meta_cache.keys() - present:
+                del actor_meta_cache[actor_id]
         out = []
         for actor_snap in world_snapshot:
             aid = int(actor_snap.id)
@@ -894,7 +898,7 @@ def traffic_manager_port_from_env() -> int:
     return 8000
 
 
-def configure_dataset_radar_blueprint(radar_bp) -> int:
+def configure_dataset_radar_blueprint(radar_bp, *, points_per_second=None, sensor_tick_s=None) -> int:
     """
     Apply shared dataset radar settings to a CARLA sensor.other.radar blueprint.
     Returns the points_per_second value applied (for logging).
@@ -907,11 +911,12 @@ def configure_dataset_radar_blueprint(radar_bp) -> int:
         radar_bp.set_attribute("horizontal_fov", str(hfov))
     if radar_bp.has_attribute("vertical_fov"):
         radar_bp.set_attribute("vertical_fov", str(vfov))
-    pps = radar_points_per_second_from_env()
+    pps = radar_points_per_second_from_env() if points_per_second is None else points_per_second
     if radar_bp.has_attribute("points_per_second"):
         radar_bp.set_attribute("points_per_second", str(pps))
     if radar_bp.has_attribute("sensor_tick"):
-        radar_bp.set_attribute("sensor_tick", str(radar_sensor_tick_s_from_env()))
+        tick_s = radar_sensor_tick_s_from_env() if sensor_tick_s is None else sensor_tick_s
+        radar_bp.set_attribute("sensor_tick", str(tick_s))
     return pps
 
 
@@ -1905,7 +1910,11 @@ def write_run_meta(run_dir, world, *, radar_count, camera_count, phase="start", 
             "dataset_env": dataset_env,
         }
         if extra:
-            meta.update(extra)
+            for name, value in extra.items():
+                if name in ("dataset_env", "rig_pose"):
+                    meta[name].update(value)
+                else:
+                    meta[name] = value
         # Merge start fields if we're stamping the stop phase over an existing file.
         if phase != "start" and meta_path.is_file():
             try:
@@ -2270,6 +2279,77 @@ def _encode_carla_image_png(image, path: str) -> None:
     PILImage.fromarray(np.ascontiguousarray(arr)).save(path, format="PNG", compress_level=1)
 
 
+def camera_metadata_row(image, sid, slabel, image_path, sensor_hfov, actors, segment=None):
+    """Build the legacy camera CSV row using the supplied frame’s actor geometry."""
+    nearby_actors = get_nearby_actors_in_fov(
+        image.transform,
+        actors,
+        NEARBY_DISTANCE_M,
+        sensor_hfov,
+    )
+
+    nearest = nearby_actors[0] if nearby_actors else None
+    nearby_ids = ";".join(str(a["id"]) for a in nearby_actors)
+    nearby_kinds = ";".join(a["kind"] for a in nearby_actors)
+    nearby_classes = ";".join(a["class_label"] for a in nearby_actors)
+
+    nearby_vehicles = [a for a in nearby_actors if a["kind"] == "vehicle"]
+    nearby_peds = [a for a in nearby_actors if a["kind"] == "pedestrian"]
+    nearest_vehicle = nearby_vehicles[0] if nearby_vehicles else None
+    nearest_ped = nearby_peds[0] if nearby_peds else None
+
+    def _actor_fields(actor):
+        if actor is None:
+            return ("", "", "", "")
+        return (
+            actor["id"],
+            actor["type_id"],
+            actor["class_label"],
+            f"{actor['distance']:.6f}",
+        )
+
+    n_id, n_type, n_class, n_dist = _actor_fields(nearest)
+    n_kind = nearest["kind"] if nearest is not None else ""
+    nv_id, nv_type, nv_class, nv_dist = _actor_fields(nearest_vehicle)
+    np_id, np_type, np_class, np_dist = _actor_fields(nearest_ped)
+    veh_ids = ";".join(str(v["id"]) for v in nearby_vehicles)
+    veh_classes = ";".join(v["class_label"] for v in nearby_vehicles)
+    ped_ids = ";".join(str(p["id"]) for p in nearby_peds)
+    ped_classes = ";".join(p["class_label"] for p in nearby_peds)
+
+    seg_id = "" if segment is None else segment
+    return [
+        sid,
+        slabel,
+        image.frame,
+        f"{image.timestamp:.6f}",
+        image.width,
+        image.height,
+        image_path,
+        n_id,
+        n_kind,
+        n_type,
+        n_class,
+        n_dist,
+        nearby_ids,
+        nearby_kinds,
+        nearby_classes,
+        nv_id,
+        nv_type,
+        nv_class,
+        nv_dist,
+        veh_ids,
+        veh_classes,
+        np_id,
+        np_type,
+        np_class,
+        np_dist,
+        ped_ids,
+        ped_classes,
+        seg_id,
+    ]
+
+
 class CameraFrameWriter:
     """Two-stage camera pipeline: metadata now, PNG encoding in the background.
 
@@ -2414,83 +2494,14 @@ class CameraFrameWriter:
                     flush=True,
                 )
             actors = []
-        nearby_actors = get_nearby_actors_in_fov(
-            image.transform,
-            actors,
-            NEARBY_DISTANCE_M,
-            sensor_hfov,
-        )
-
-        image_name = f"frame_{image.frame:08d}.png"
-        image_path = os.path.join(folder, image_name)
+        image_path = os.path.join(folder, f"frame_{image.frame:08d}.png")
         self._submit_encode(image, image_path)
-        seg = self._segment_fn(int(image.frame)) if self._segment_fn else None
-        seg_id = "" if seg is None else seg
-
-        nearest = nearby_actors[0] if nearby_actors else None
-        nearby_ids = ";".join(str(a["id"]) for a in nearby_actors)
-        nearby_kinds = ";".join(a["kind"] for a in nearby_actors)
-        nearby_classes = ";".join(a["class_label"] for a in nearby_actors)
-
-        nearby_vehicles = [a for a in nearby_actors if a["kind"] == "vehicle"]
-        nearby_peds = [a for a in nearby_actors if a["kind"] == "pedestrian"]
-        nearest_vehicle = nearby_vehicles[0] if nearby_vehicles else None
-        nearest_ped = nearby_peds[0] if nearby_peds else None
-
-        def _actor_fields(actor):
-            if actor is None:
-                return ("", "", "", "")
-            return (
-                actor["id"],
-                actor["type_id"],
-                actor["class_label"],
-                f"{actor['distance']:.6f}",
-            )
-
-        n_id, n_type, n_class, n_dist = _actor_fields(nearest)
-        n_kind = nearest["kind"] if nearest is not None else ""
-        nv_id, nv_type, nv_class, nv_dist = _actor_fields(nearest_vehicle)
-        np_id, np_type, np_class, np_dist = _actor_fields(nearest_ped)
-        veh_ids = ";".join(str(v["id"]) for v in nearby_vehicles)
-        veh_classes = ";".join(v["class_label"] for v in nearby_vehicles)
-        ped_ids = ";".join(str(p["id"]) for p in nearby_peds)
-        ped_classes = ";".join(p["class_label"] for p in nearby_peds)
-
+        segment = self._segment_fn(int(image.frame)) if self._segment_fn else None
+        row = camera_metadata_row(image, sid, slabel, image_path, sensor_hfov, actors, segment)
         with self._lock:
             if self._camera_file.closed:
                 return
-            self._csv_writer.writerow(
-                [
-                    sid,
-                    slabel,
-                    image.frame,
-                    f"{image.timestamp:.6f}",
-                    image.width,
-                    image.height,
-                    image_path,
-                    n_id,
-                    n_kind,
-                    n_type,
-                    n_class,
-                    n_dist,
-                    nearby_ids,
-                    nearby_kinds,
-                    nearby_classes,
-                    nv_id,
-                    nv_type,
-                    nv_class,
-                    nv_dist,
-                    veh_ids,
-                    veh_classes,
-                    np_id,
-                    np_type,
-                    np_class,
-                    np_dist,
-                    ped_ids,
-                    ped_classes,
-                    seg_id,
-                ]
-            )
+            self._csv_writer.writerow(row)
             self._counts["camera_frames"] += 1
 
     def close(self, timeout_s: float = 60.0) -> None:

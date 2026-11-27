@@ -58,3 +58,7 @@ The offscreen test server reported the same CARLA build as the installed client 
 ## Actor and signal findings in Step 3
 
 CARLA and SUMO use different identifiers for corridor signals. Mapping the physical heads required checking the live stop waypoints against SUMO's controlled approaches. Corresponding waypoints were within 6.3 m of the sampled SUMO lane ends, including CARLA landmark 951 on road 16 and SUMO approach 15. CARLA exposes approach colors, while SUMO can assign separate states to turn and pedestrian movements. A separate CARLA frame may be required before its actor list reflects a newly committed spawn. The v2 mirror uses session tags to recover those actors if CARLA committed a spawn whose response was lost. [Architecture](ARCHITECTURE.md#scenario-actor-and-signal-synchronization)
+
+## Sensor findings in Step 4
+
+The 600-frame v2 reference run received camera callbacks up to one confirmed frame later than their measurement frame. Every recorded camera and radar frame still joined to its own actor snapshot. The run exercised only one machine and one scenario. Sensor delay and completeness can vary with rendering load and storage speed. A 48-frame traffic run produced valid files and zero missing actor frames during labeling, but no matched radar returns. The existing postprocessor requires matched returns to calibrate RCS. [Verification log](PROGRESS.md#2026-11-26--step-4)

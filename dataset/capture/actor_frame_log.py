@@ -60,6 +60,31 @@ def snapshot_location(snapshot: dict) -> carla.Location:
     return carla.Location(float(loc["x"]), float(loc["y"]), float(loc["z"]))
 
 
+def serialize_actor_frame(frame_id, actor_snapshots, segment=None, *, world=None) -> str:
+    """Serialize the actor geometry shared by capture and offline labeling."""
+    actors_out = []
+    for snap in actor_snapshots:
+        enriched = enrich_snapshot_with_bbox(world, snap) if world is not None else snap
+        location = enriched.get("location")
+        if not isinstance(location, dict):
+            location = _vec3(location)
+        actors_out.append(
+            {
+                "id": enriched["id"],
+                "kind": enriched.get("kind", ""),
+                "type_id": enriched.get("type_id", ""),
+                "class_label": enriched.get("class_label", ""),
+                "location": location,
+                "rotation": enriched.get("rotation"),
+                "bbox": enriched.get("bbox"),
+            }
+        )
+    record = {"frame": int(frame_id), "actors": actors_out}
+    if segment is not None:
+        record["segment"] = int(segment)
+    return json.dumps(record, separators=(",", ":")) + "\n"
+
+
 class ActorFrameLogger:
     """Append one JSON line per simulation frame (deduped).
 
@@ -131,27 +156,7 @@ class ActorFrameLogger:
     def _write_record(self, frame_id: int, actor_snapshots: list[dict], segment=None) -> None:
         if frame_id in self._seen_frames:
             return
-        actors_out = []
-        for snap in actor_snapshots:
-            enriched = enrich_snapshot_with_bbox(self._world, snap)
-            location = enriched.get("location")
-            if not isinstance(location, dict):
-                location = _vec3(location)
-            actors_out.append(
-                {
-                    "id": enriched["id"],
-                    "kind": enriched.get("kind", ""),
-                    "type_id": enriched.get("type_id", ""),
-                    "class_label": enriched.get("class_label", ""),
-                    "location": location,
-                    "rotation": enriched.get("rotation"),
-                    "bbox": enriched.get("bbox"),
-                }
-            )
-        record = {"frame": int(frame_id), "actors": actors_out}
-        if segment is not None:
-            record["segment"] = int(segment)
-        line = json.dumps(record, separators=(",", ":")) + "\n"
+        line = serialize_actor_frame(frame_id, actor_snapshots, segment, world=self._world)
         with self._write_lock:
             if self._closed:
                 return

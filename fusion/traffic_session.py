@@ -6,15 +6,21 @@ import argparse
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
+import json
 from math import ceil, isclose, isfinite
 from pathlib import Path
 import signal
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 
 from .carla_adapter import open_carla_session
 from .simulation_engine import SimulationEngine, SimulationFrame
 from .sumo_adapter import open_sumo_session
+
+if TYPE_CHECKING:
+    from .capture_session import CaptureOptions
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,7 @@ def run_traffic(
     seed: int = 42,
     render_radius: float | None = 150.0,
     stretch_signals: str = "green",
+    capture_options: CaptureOptions | None = None,
     on_frame: Callable[[SimulationFrame], None] | None = None,
 ) -> TrafficRun:
     """Advance a scenario and verify its traffic and signals before publishing frames."""
@@ -93,6 +100,16 @@ def run_traffic(
             lights.start()
             mirror = ActorMirror(carla, connection, seed=seed, render_radius=render_radius)
             resources.callback(mirror.close)
+            capture = None
+            if capture_options is not None:
+                from .capture_session import TAIL_TICKS, WARMUP_TICKS, open_capture
+
+                capture = resources.enter_context(open_capture(
+                    carla, capture_options, scenario=scenario, seed=seed, sumo_version=sumo.version,
+                ))
+                for _ in range(WARMUP_TICKS):
+                    carla.tick()
+                capture.begin(carla.world.get_snapshot())
             peak_sumo_vehicles = 0
             peak_carla_actors = 0
 
@@ -118,8 +135,17 @@ def run_traffic(
             )
             for _ in range(steps):
                 frame = engine.step()
+                if capture is not None:
+                    capture.record(frame, carla.world.get_snapshot(), mirror.actor_ids.values())
                 if on_frame is not None:
                     on_frame(frame)
+            if capture is not None:
+                capture.stop_recording()
+                for _ in range(TAIL_TICKS):
+                    if not capture.collect_tail():
+                        break
+                    carla.tick()
+                capture.wait_for_tail()
             return TrafficRun(
                 frame, peak_sumo_vehicles, peak_carla_actors, mirror.spawn_collisions,
                 sumo.pid, sumo.version, carla.version,
@@ -144,14 +170,38 @@ def main() -> int:
     parser.add_argument("--render-radius", type=float, default=150.0)
     parser.add_argument("--no-cull", action="store_true")
     parser.add_argument("--stretch-signals", choices=("green", "static"), default="green")
+    parser.add_argument("--capture-dir", type=Path, help="write a v2 capture into a new directory")
+    parser.add_argument("--radars", type=int, default=8)
+    parser.add_argument("--radars-south", type=int)
+    parser.add_argument("--radars-north", type=int)
+    parser.add_argument("--radar-height", type=float, default=3.0)
+    parser.add_argument("--radar-pps", type=int, default=0)
+    parser.add_argument("--label", action="store_true", help="run legacy offline radar labeling")
+    parser.add_argument("--postprocess", action="store_true", help="run labeling and legacy postprocessing")
     args = parser.parse_args()
     if not 1 <= args.density <= 100:
         parser.error("--density must be between 1 and 100")
     if min(args.ambient_vehicles, args.pedestrians, args.bicycles) < 0:
         parser.error("ambient actor counts must be nonnegative")
+    if (args.label or args.postprocess) and args.capture_dir is None:
+        parser.error("--label and --postprocess require --capture-dir")
     try:
         from traffic.validate_scenarios import ambient_traffic, build_files, runner
 
+        capture_options = None
+        if args.capture_dir is not None:
+            from .capture_session import CaptureOptions
+            from .config import split_radar_count
+
+            if args.radars < 1:
+                raise ValueError("--radars must be positive")
+            south, north = split_radar_count(args.radars)
+            capture_options = CaptureOptions(
+                args.capture_dir.expanduser().resolve(),
+                south if args.radars_south is None else args.radars_south,
+                north if args.radars_north is None else args.radars_north,
+                args.radar_height, args.radar_pps,
+            )
         with TemporaryDirectory(prefix="scalesense-v2-") as temp_dir:
             config, [route_file, *_] = build_files(
                 scenario_id=args.scenario, density=args.density,
@@ -171,11 +221,27 @@ def main() -> int:
                 scenario=args.scenario, seed=args.seed,
                 render_radius=None if args.no_cull else args.render_radius,
                 stretch_signals=args.stretch_signals,
+                capture_options=capture_options,
             )
+        if capture_options is not None:
+            directory = capture_options.directory
+            meta = json.loads((directory / "run_meta.json").read_text(encoding="utf-8"))
+            print(f"Capture {meta['capture_status']} in {directory}", flush=True)
+            if args.label or args.postprocess:
+                capture_scripts = Path(__file__).resolve().parents[1] / "dataset" / "capture"
+                subprocess.run([
+                    sys.executable, "-B", str(capture_scripts / "LabelRadarCapture.py"),
+                    "--capture-dir", str(directory),
+                ], check=True)
+                if args.postprocess:
+                    subprocess.run([
+                        sys.executable, "-B", str(capture_scripts / "PostProcessDataset.py"),
+                        "--capture-dir", str(directory), "--seed", str(meta["postprocess_seed"]),
+                    ], check=True)
     except KeyboardInterrupt:
         print("Traffic session interrupted.", file=sys.stderr)
         return 130
-    except (ImportError, OSError, RuntimeError, ValueError, OverflowError) as exc:
+    except (ImportError, OSError, RuntimeError, ValueError, OverflowError, subprocess.CalledProcessError) as exc:
         print(f"Traffic session failed: {exc}", file=sys.stderr)
         return 1
 

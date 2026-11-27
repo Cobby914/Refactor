@@ -51,6 +51,20 @@ def sensor_label_from_radar_role(role_name: str) -> str:
     return ""
 
 
+def sensor_extrinsic_row(sensor_id: int, label: str, transform: carla.Transform) -> dict[str, Any]:
+    loc, rot = transform.location, transform.rotation
+    return {
+        "sensor_id": int(sensor_id),
+        "sensor_label": label,
+        "x": round(float(loc.x), 6),
+        "y": round(float(loc.y), 6),
+        "z": round(float(loc.z), 6),
+        "yaw": round(float(rot.yaw), 6),
+        "pitch": round(float(rot.pitch), 6),
+        "roll": round(float(rot.roll), 6),
+    }
+
+
 def collect_radar_extrinsics_from_world(world: carla.World) -> list[dict[str, Any]]:
     """World-frame poses for spawned dataset radars (matches live session used for capture)."""
     rows: list[dict[str, Any]] = []
@@ -59,20 +73,7 @@ def collect_radar_extrinsics_from_world(world: carla.World) -> list[dict[str, An
         label = sensor_label_from_radar_role(role_name)
         if not label:
             continue
-        tr = actor.get_transform()
-        loc, rot = tr.location, tr.rotation
-        rows.append(
-            {
-                "sensor_id": int(actor.id),
-                "sensor_label": label,
-                "x": round(float(loc.x), 6),
-                "y": round(float(loc.y), 6),
-                "z": round(float(loc.z), 6),
-                "yaw": round(float(rot.yaw), 6),
-                "pitch": round(float(rot.pitch), 6),
-                "roll": round(float(rot.roll), 6),
-            }
-        )
+        rows.append(sensor_extrinsic_row(actor.id, label, actor.get_transform()))
     rows.sort(key=lambda r: r["sensor_id"])
     return rows
 
