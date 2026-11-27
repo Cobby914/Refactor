@@ -113,3 +113,12 @@ Route the v2 session through the existing campaign and GUI entry points. Anchor 
 ### Next increment
 
 Record paired legacy and v2 runs with the same scenarios, seeds and sensor configuration. Compare timing, frame coverage and the perception pipeline outputs before changing the default engine.
+
+## 2026-11-27 · Step 6
+
+- Completed the [matched live capture benchmark](BENCHMARK.md) on CARLA 0.9.16 and SUMO 1.28.0. Ran two trials per engine at each of 4, 8, 12 and 14 radars, plus one control per layout from `98a4744`. The [benchmark harness](../../tests/benchmark_capture.py) measures the existing campaign entry points.
+- Both engines saved all 3,520 camera and actor frames and all 33,440 radar scans in the matched trials. V2 confirmed 3,520 paired steps and cleaned up each session. The legacy runner updated on 3,462 recorded frames and its rig remained after each campaign returned. The pinned controls reproduced both legacy behaviors.
+- A 22 sim-second recording took 7.34–9.13 wall seconds in legacy and 14.50–21.07 wall seconds in v2. V2's writer queue was full at 67.3–92.3% of recording tick samples. The report separates recording, whole campaign and shutdown timings.
+- All 20 captures passed the existing labeler, Doppler/RCS processing and PointNet frame building. The labeler reported zero missing actor frames. The 16 v2 unit tests and 21 legacy traffic tests passed. The isolated CARLA server was stopped after verifying an empty rig and restored settings.
+
+Keep v2 opt-in while profiling the recording path and validating sustained throughput at the default ray budget.

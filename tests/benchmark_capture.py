@@ -1,0 +1,278 @@
+"""Measure one real legacy or v2 campaign on an isolated CARLA server."""
+
+import argparse
+from collections import Counter, defaultdict
+from contextlib import ExitStack
+import csv
+from functools import wraps
+import importlib
+import json
+import os
+from pathlib import Path
+import platform
+from statistics import median, quantiles
+import subprocess
+import sys
+from time import perf_counter
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+
+def write_json(path, obj):
+    path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+
+
+def read_json(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+class Trace:
+    def __init__(self, stack):
+        self.stack = stack
+        self.samples = defaultdict(list)
+        self.last_tick = 0
+        self.backlogs = {}
+
+    def wrap(self, owner, name, observe):
+        original = getattr(owner, name)
+
+        @wraps(original)
+        def call(*args, **kwargs):
+            start = perf_counter()
+            result = original(*args, **kwargs)
+            end = perf_counter()
+            observe(args, result, start, end)
+            return result
+
+        self.stack.enter_context(patch.object(owner, name, call))
+
+    def capture(self, carla, capture, *, legacy):
+        def tick(_args, frame, start, end):
+            self.last_tick = frame
+            self.samples["tick"].append((frame, start, end))
+            for name, pending in self.backlogs.items():
+                self.samples[name].append((frame, pending()))
+
+        listen = carla.Sensor.listen
+
+        def observe_callbacks(sensor, callback):
+            sensor_type = sensor.type_id
+            sensor_id = sensor.id
+            attrs = sensor.attributes
+            self.samples["sensors"].append((sensor_type, sensor_id, attrs))
+
+            def measure(data):
+                self.samples["callbacks"].append((sensor_type, sensor_id, data.frame, self.last_tick))
+                return callback(data)
+
+            return listen(sensor, measure)
+
+        self.stack.enter_context(patch.object(carla.Sensor, "listen", observe_callbacks))
+        self.wrap(carla.World, "tick", tick)
+        self.wrap(capture, "process_radar_measurement_fast", lambda args, *_:
+                  self.samples["radar_written"].append((args[2], args[0].frame, len(args[0]))))
+        if legacy:
+            from capture.radar_stream import PerRadarDequeBuffer
+
+            self.wrap(PerRadarDequeBuffer, "__init__", lambda args, *_:
+                      self.backlogs.update(radar_queue=args[0].pending))
+            self.wrap(capture.CameraFrameWriter, "__init__", lambda args, *_:
+                      self.backlogs.update(camera_queue=args[0].pending))
+
+
+def trace_legacy_child(directory, script, arguments):
+    sys.path.insert(0, str(script.parent))
+    sys.argv = [str(script), *arguments]
+    module = importlib.import_module(script.stem)
+    with ExitStack() as stack:
+        trace = Trace(stack)
+        if script.stem == "runner":
+            trace.wrap(module.CarlaSyncManager, "step", lambda args, _, start, end:
+                       trace.samples["mirror"].append((args[0].last_frame, start, end)))
+        else:
+            import carla
+
+            trace.capture(carla, module, legacy=True)
+        try:
+            module.main()
+        finally:
+            write_json(directory / f"{script.stem}_trace.json", trace.samples)
+
+
+def latency(samples):
+    ms = [(end - start) * 1000 for _, start, end in samples]
+    return {"count": len(ms), "median_ms": median(ms), "p95_ms": quantiles(ms, n=100)[94]} if len(ms) > 1 else {}
+
+
+def summarize(directory, trace, run_end):
+    segment, = read_json(directory / "segments.json")["segments"]
+    frames = set(range(segment["start_frame"], segment["end_frame"] + 1))
+    ticks = [event for event in trace["tick"] if event[0] in frames]
+    mirrors = [event for event in trace["mirror"] if event[0] in frames]
+    radar = defaultdict(set)
+    zero_scans = 0
+    for label, frame, returns in trace["radar_written"]:
+        if frame in frames:
+            radar[label].add(frame)
+            zero_scans += returns == 0
+    manifest = directory / "capture_frames.jsonl"
+    with (directory / "camera_data.csv").open(encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+        camera_header = reader.fieldnames
+        camera = Counter(int(row["frame"]) for row in reader)
+    with (directory / "actor_frames.jsonl").open(encoding="utf-8") as file:
+        truth = {json.loads(line)["frame"] for line in file}
+    callbacks = defaultdict(Counter)
+    late = defaultdict(Counter)
+    for sensor_type, sensor_id, frame, last_tick in trace["callbacks"]:
+        if frame in frames:
+            callbacks[sensor_type][(sensor_id, frame)] += 1
+            late[sensor_type][max(0, last_tick - frame)] += 1
+    points = 0
+    with (directory / "radar_data.csv").open(encoding="utf-8", newline="") as file:
+        radar_header = next(csv.reader(file))
+        points = sum(1 for _ in file)
+    summary = {
+        "window_frames": len(frames), "recording_s": ticks[-1][2] - ticks[0][1],
+        "shutdown_s": run_end - ticks[-1][2], "carla_tick": latency(ticks),
+        "actor_mirror": latency(mirrors), "mirror_updates_in_window": len({event[0] for event in mirrors}),
+        "tick_period": latency([(frame, prev[1], start) for prev, (frame, start, _) in zip(ticks, ticks[1:])]),
+        "camera_frames": len(camera.keys() & frames), "camera_rows": sum(camera.values()),
+        "camera_header": camera_header,
+        "actor_frames": len(truth & frames), "radar_scans": {label: len(values & frames) for label, values in radar.items()},
+        "zero_return_radar_scans": zero_scans, "radar_csv_rows": points, "radar_header": radar_header,
+        "camera_frames_without_actor_log": len(camera.keys() - truth),
+        "radar_frames_without_actor_log": len(set().union(*radar.values()) - truth),
+        "sensor_callbacks": {kind: len(values) for kind, values in callbacks.items()},
+        "duplicate_callbacks": {kind: sum(count - 1 for count in values.values()) for kind, values in callbacks.items()},
+        "callback_lag_ticks": late,
+        "tick_sampled_backlog_max": {name: max((pending for frame, pending in values if frame in frames), default=0)
+                                     for name, values in trace.items() if name.endswith("_queue")},
+        "world_frame_start": min(frames), "world_frame_end": max(frames),
+    }
+    if manifest.is_file():
+        summary["frame_sync"] = read_json(directory / "run_meta.json")["frame_sync"]
+        summary["paired_step"] = latency([event for event in trace["paired_step"] if event[0] in frames])
+        with manifest.open(encoding="utf-8") as file:
+            summary["sumo_recording_end_s"] = json.loads(list(file)[-1])["sumo_time_s"]
+    return summary
+
+
+def run_trial(args):
+    import carla
+    from fusion import orchestrator
+    from fusion.campaign import CampaignConfig, RunSpec, run_campaign
+    from traffic import sumo_env
+
+    directory = args.output.resolve()
+    directory.mkdir(parents=True, exist_ok=False)
+    client = carla.Client(args.host, args.port)
+    client.set_timeout(30)
+    world = client.get_world()
+    if world.get_map().name.rsplit("/", 1)[-1] != "Town10HD_Opt" or world.get_settings().synchronous_mode:
+        raise RuntimeError("benchmark requires an idle asynchronous Town10HD_Opt server")
+    settings = world.get_settings()
+    baseline = world.get_actors()
+    if any(actor.type_id.startswith(("vehicle.", "walker.", "sensor.")) for actor in baseline):
+        raise RuntimeError("benchmark needs a dedicated world without existing actors or sensors")
+    baseline_ids = {actor.id for actor in baseline}
+    engine = {"engine": args.engine} if "engine" in CampaignConfig.__dataclass_fields__ else {}
+    if not engine and args.engine != "legacy":
+        raise RuntimeError("this revision only supports the legacy engine")
+    cfg = CampaignConfig(
+        name=f"benchmark_{args.engine}_{args.radars}",
+        runs=[RunSpec(scenario=1, density=60, duration=args.duration, seed=42,
+                      ambient_vehicles=30, pedestrians=12, bicycles=8)],
+        warmup_s=args.warmup, radars_south=args.radars // 2, radars_north=args.radars // 2,
+        radar_points_per_second=1200, rate_hz=20, label=False, postprocess=False,
+        scene_cleanup=False, clear_trees=False, carla_host=args.host, carla_port=args.port,
+        capture_base_dir=str(directory), sync_timeout=15, runner_start_timeout_s=30,
+        **engine,
+    )
+    with ExitStack() as stack:
+        trace = Trace(stack)
+        if args.engine == "legacy":
+            launch = orchestrator._popen
+
+            def launch_instrumented(command, cwd, env, *, new_group):
+                script = Path(command[0])
+                if script.stem in ("runner", "CaptureRadarCameraData"):
+                    command = [str(Path(__file__).resolve()), "--child", str(directory), *command]
+                return launch(command, cwd, dict(env, PYTHONDONTWRITEBYTECODE="1", PYTHONUNBUFFERED="1"),
+                              new_group=new_group)
+
+            stack.enter_context(patch.object(orchestrator, "_popen", launch_instrumented))
+        else:
+            from fusion.actor_mirror import ActorMirror
+            from fusion.capture_session import legacy
+            from fusion.capture_writer import CaptureWriter
+            from fusion.simulation_engine import SimulationEngine
+
+            trace.capture(carla, legacy, legacy=False)
+            trace.wrap(CaptureWriter, "__init__", lambda args, *_:
+                       trace.backlogs.update(joined_frame_queue=args[0]._queue.qsize))
+            trace.wrap(SimulationEngine, "step", lambda _, frame, start, end:
+                       trace.samples["paired_step"].append((frame.carla_frame, start, end)))
+            trace.wrap(ActorMirror, "step", lambda _, result, start, end:
+                       trace.samples["mirror"].append((trace.last_tick + 1, start, end)))
+        started = perf_counter()
+        result = run_campaign(cfg)
+        run_end = perf_counter()
+
+    actors = world.get_actors()
+    leftovers = [actor for actor in actors if actor.id not in baseline_ids]
+    summary = {
+        "ok": result.ok, "error": result.error, "directory": result.capture_dir,
+        "config": {**cfg.to_dict(), "engine": args.engine},
+        "carla_version": client.get_server_version(),
+        "sumo_version": subprocess.check_output([sumo_env.sumo_binary("sumo"), "--version"], text=True).splitlines()[0],
+        "platform": platform.platform(), "python": platform.python_version(), "total_s": run_end - started,
+        "settings_restored": world.get_settings() == settings,
+        "leftover_dynamic_actors": [actor.type_id for actor in leftovers],
+        "lights_frozen": sum(light.is_frozen() for light in actors.filter("traffic.traffic_light*")),
+    }
+    write_json(directory / "result.json", summary)
+    # Measure legacy cleanup as delivered, then release only the rig actors that
+    # the just-finished trial created on this dedicated endpoint.
+    rig = [actor.id for actor in leftovers if actor.attributes.get("role_name", "").startswith(
+        ("dataset_camera_", "dataset_radar_", "scalesense-v2-sensor:"),
+    )]
+    if rig:
+        responses = client.apply_batch_sync([carla.command.DestroyActor(actor_id) for actor_id in rig], False)
+        errors = [response.error for response in responses if response.error]
+        if len(responses) != len(rig) or errors:
+            raise RuntimeError(f"failed to release leftover benchmark rig: {errors}")
+        world.wait_for_tick(5)
+    if result.ok:
+        if args.engine == "legacy":
+            trace.samples.update(read_json(directory / "CaptureRadarCameraData_trace.json"))
+            trace.samples.update(read_json(directory / "runner_trace.json"))
+        else:
+            write_json(directory / "v2_trace.json", trace.samples)
+        summary.update(summarize(Path(result.capture_dir), trace.samples, run_end))
+        write_json(directory / "result.json", summary)
+    return 0 if result.ok else 1
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--child":
+        _, _, directory, script, *arguments = sys.argv
+        trace_legacy_child(Path(directory), Path(script), arguments)
+        return 0
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--engine", required=True, choices=("legacy", "v2"))
+    parser.add_argument("--radars", required=True, type=int, choices=(4, 8, 12, 14))
+    parser.add_argument("--output", required=True, type=Path, help="new directory for the capture and timing traces")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", required=True, type=int, help="dedicated asynchronous CARLA endpoint")
+    parser.add_argument("--duration", type=int, default=22)
+    parser.add_argument("--warmup", type=float, default=8)
+    return run_trial(parser.parse_args())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

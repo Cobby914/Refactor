@@ -60,7 +60,8 @@ One CARLA session and sensor rig span a v2 campaign. Each row builds its own rou
 
 The writer flushes row output before the coordinator commits the actual inclusive range to `segments.json`, which is consumed by the existing offline labeler. The camera CSV, actor log and frame manifest carry the segment ID. The stop request finishes confirmed frames and skips the remaining rows. If a simulator step fails after advancing either clock, the coordinator terminates the run and saves the confirmed prefix without retrying that step. A new run takes a fresh clock origin.
 
-## Next interfaces and remaining decisions
+## Performance and rollout
 
-- The lifecycle manager owns the rig, world settings, Traffic Manager state, TraCI connection and SUMO child. It starts cleanup with the first successful resource acquisition, tracks actor ownership as soon as a spawn succeeds, and verifies cleanup before a new session starts. Timeouts need named stages and a finite terminal outcome. A session can hold a world across campaign rows while a fresh SUMO instance uses a new clock origin.
-- Existing writers and labelers define the dataset contract. Measure latency and throughput under the same seed and rig configuration, then tune queue capacities and writer concurrency when measurements justify it. Verify the effective SUMO step and CARLA fixed delta at startup, especially for requested rates whose periods may be rounded differently by the two simulators.
+The [matched benchmark](BENCHMARK.md) exercised both engines at 4, 8, 12 and 14 radars. V2 confirmed every paired clock step and left the world clean. Its recording rate was lower, and most post-tick writer queue samples were at capacity. Profile ground-truth collection, writer submission and image encoding before increasing queue capacity or changing worker concurrency. Preserve exact-frame joins, the bounded queue and the existing dataset contract when tuning.
+
+Keep legacy as the default until throughput is verified at the default radar ray budget and through longer campaigns.

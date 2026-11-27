@@ -113,6 +113,8 @@ python run_fusion.py --engine v2 --scenario 3 --density 60 --duration 300 --rada
 
 The output includes the existing radar and camera CSVs, camera PNGs, actor geometry and sensor extrinsics. `capture_frames.jsonl` lists the received and missing sensors for each paired frame. `run_meta.json` summarizes completion and stream coverage. The existing Doppler and RCS postprocessing requires matched radar returns for calibration.
 
+The [capture benchmark](docs/refactor/BENCHMARK.md) compares sensor coverage, traffic synchronization and recording time for the legacy and v2 engines.
+
 For an exact step count and a specific new capture directory, use the lower-level command.
 
 ```bash

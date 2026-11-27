@@ -62,3 +62,7 @@ CARLA and SUMO use different identifiers for corridor signals. Mapping the physi
 ## Sensor findings in Step 4
 
 The 600-frame v2 reference run received camera callbacks up to one confirmed frame later than their measurement frame. Every recorded camera and radar frame still joined to its own actor snapshot. The run exercised only one machine and one scenario. Sensor delay and completeness can vary with rendering load and storage speed. A 48-frame traffic run produced valid files and zero missing actor frames during labeling, but no matched radar returns. The existing postprocessor requires matched returns to calibrate RCS. [Verification log](PROGRESS.md#2026-11-26--step-4)
+
+## Matched capture findings in Step 6
+
+The Windows benchmark reproduced two legacy lifecycle problems on the pinned `98a4744` revision and on the current legacy engine. The passive traffic runner missed recorded CARLA frames, and the campaign returned with its radar and camera actors still present. The v2 campaign verified one traffic update per recorded frame and released all of its actors. Both engines delivered their expected sensor samples in these short runs. The v2 writer queue frequently reached capacity, so steady-state recording throughput remains a rollout condition. [Benchmark results](BENCHMARK.md)
