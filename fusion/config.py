@@ -110,7 +110,7 @@ class FusionConfig:
         if not (1.0 <= self.rate_hz <= 200.0):
             errs.append(f"rate_hz must be 1-200 (got {self.rate_hz})")
         # CARLA rejects fixed_delta_seconds above ~0.1 s in some builds; keep sane.
-        if self.fixed_delta_s > 0.5:
+        elif self.fixed_delta_s > 0.5:
             errs.append(f"fixed_delta {self.fixed_delta_s}s too large; raise rate_hz")
         self._errors = errs
         return self

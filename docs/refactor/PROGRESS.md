@@ -95,3 +95,21 @@ The initial sparse 48-frame verification capture had zero matched returns. The l
 ### Next increment
 
 Route the v2 session through the existing campaign and GUI entry points. Anchor recording windows to confirmed paired frames and preserve each campaign row's metadata and output format.
+
+## 2026-11-26 · Step 5
+
+- Added `--engine v2` to the [single-run and campaign CLI](../../README_RUNNING.md#v2-single-run-capture) and an **Engine** selector to the [campaign GUI](../../fusion_gui.py). The selected engine is saved with the campaign. Plans without an engine field default to legacy.
+- The [v2 campaign coordinator](../../fusion/campaign_v2.py) owns one rig and capture directory. Each row starts a fresh SUMO process and advances both simulators during warm-up. `segments.json` records the inclusive range of frames saved per row, and the legacy labeler uses it to populate the segment and scenario columns.
+
+| Command or check | Result |
+| --- | --- |
+| `python -B run_fusion.py --engine v2 --duration 1` with four radars, 800 points/s and labeling disabled | Recorded 20 paired frames at 20 Hz through the normal single-run entry point. |
+| Two consecutive two-row campaigns on the same `Town10HD_Opt` world | Scenarios 1 and 3 each had three warm-up frames and 100 recorded frames. Frame manifest, actor log, camera CSV and segment bounds agreed. Both rows used the same camera ID and distinct SUMO children. The labeler processed one campaign with zero missing actor frames and the expected segment and scenario IDs. |
+| GUI Stop and a SIGINT raised during recording through `run_fusion.main()` | Both saved an interrupted capture with the confirmed prefix, skipped the second row and reaped SUMO. The CLI returned `130`. |
+| Injected CARLA tick timeout on paired step nine | The first row failed with five recorded frames after three warm-up frames. The second row was skipped. A new campaign on the same world completed both rows. |
+| CLI campaign with scene cleanup enabled, four radars at 1,200 points/s, and S01/S03 rows of 30 s and 5 s | Saved 600 and 100 paired frames. The labeler handled 129,200 returns with zero missing actor frames and 793 matches. Doppler and RCS processing completed with per-segment output. |
+| `python -B -m unittest discover -s tests -v`, `-s tests/integration -v` and `-s traffic/tests -v` | 16 unit tests, 14 integration tests and 21 legacy traffic tests passed. The Tk integration ran outside the sandbox so Tcl could initialize. CARLA settings, signal timing and owned actor and process cleanup were verified. |
+
+### Next increment
+
+Record paired legacy and v2 runs with the same scenarios, seeds and sensor configuration. Compare timing, frame coverage and the perception pipeline outputs before changing the default engine.

@@ -32,10 +32,12 @@ class CarlaSession:
         return frame
 
 
-def _wait_for_world(client, endpoint, ready_timeout_s, rpc_timeout_s):
+def _wait_for_world(client, endpoint, ready_timeout_s, rpc_timeout_s, stop_check=None):
     deadline = monotonic() + ready_timeout_s
     last_error = None
     while (remaining := deadline - monotonic()) > 0:
+        if stop_check is not None:
+            stop_check()
         client.set_timeout(min(remaining, rpc_timeout_s))
         try:
             return client.get_world()
@@ -46,12 +48,12 @@ def _wait_for_world(client, endpoint, ready_timeout_s, rpc_timeout_s):
 
 
 @contextmanager
-def open_carla_session(host, port, fixed_delta_s, *, ready_timeout_s, rpc_timeout_s):
+def open_carla_session(host, port, fixed_delta_s, *, ready_timeout_s, rpc_timeout_s, stop_check=None):
     """Connect to an idle Town10HD_Opt world and restore its settings on exit."""
     import carla
 
     client = carla.Client(host, port)
-    world = _wait_for_world(client, f"{host}:{port}", ready_timeout_s, rpc_timeout_s)
+    world = _wait_for_world(client, f"{host}:{port}", ready_timeout_s, rpc_timeout_s, stop_check)
     client.set_timeout(rpc_timeout_s)
     client_version = client.get_client_version()
     server_version = client.get_server_version()
@@ -73,6 +75,8 @@ def open_carla_session(host, port, fixed_delta_s, *, ready_timeout_s, rpc_timeou
         if fixed_delta_s > max_delta_s + 1e-7:
             raise RuntimeError(f"CARLA physics substeps allow at most {max_delta_s:g}s per tick")
 
+    if stop_check is not None:
+        stop_check()
     try:
         world.apply_settings(settings, rpc_timeout_s)
         effective = world.get_settings()

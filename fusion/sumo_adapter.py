@@ -29,9 +29,11 @@ class SumoSession:
         return self.connection.simulation.getTime()
 
 
-def _connect(traci, port, process, deadline):
+def _connect(traci, port, process, deadline, stop_check):
     last_error = None
     while monotonic() < deadline:
+        if stop_check is not None:
+            stop_check()
         if (code := process.poll()) is not None:
             raise RuntimeError(f"SUMO exited during startup (code {code})") from last_error
         try:
@@ -63,7 +65,7 @@ def _reap(process):
 
 
 @contextmanager
-def open_sumo_session(config_path: Path, *, ready_timeout_s, rpc_timeout_s):
+def open_sumo_session(config_path: Path, *, ready_timeout_s, rpc_timeout_s, gui=False, stop_check=None):
     """Yield only after a version handshake and clock query succeed."""
     sumo_env.ensure_traci_importable()
     import traci
@@ -71,25 +73,31 @@ def open_sumo_session(config_path: Path, *, ready_timeout_s, rpc_timeout_s):
 
     port = getFreeSocketPort()
     cmd = [
-        sumo_env.sumo_binary(), "-c", str(config_path.resolve()),
+        sumo_env.sumo_binary("sumo-gui" if gui else "sumo"), "-c", str(config_path.resolve()),
         "--remote-port", str(port), "--num-clients", "1",
         "--no-step-log", "--duration-log.disable", "true",
     ]
+    if gui:
+        cmd.extend(("--start", "--quit-on-end"))
     group = (
         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32"
         else {"start_new_session": True}
     )
     try:
         with ExitStack() as cleanup:
+            if stop_check is not None:
+                stop_check()
             process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **group)
             cleanup.callback(_reap, process)
             deadline = monotonic() + ready_timeout_s
-            connection = _connect(traci, port, process, deadline)
+            connection = _connect(traci, port, process, deadline, stop_check)
             # TraCI 1.28 provides no public per-connection read timeout.
             connection_socket = connection._socket
             cleanup.callback(_close_connection, connection, connection_socket, rpc_timeout_s)
 
             def set_startup_timeout():
+                if stop_check is not None:
+                    stop_check()
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise RuntimeError("timed out during the SUMO TraCI handshake")

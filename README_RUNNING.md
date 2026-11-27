@@ -92,7 +92,7 @@ Use a dedicated asynchronous CARLA server on `Town10HD_Opt`. The command runs th
 python -m fusion.traffic_session --carla-port 2000 --scenario 1 --steps 800 --step-length 0.05 --pedestrians 12 --bicycles 8
 ```
 
-The default mirror radius is 150 m. Use `--render-radius` to change it or `--no-cull` to mirror the whole map. `--stretch-signals static` uses the imported SUMO signal programs. Use `--ready-timeout` for simulator startup and `--rpc-timeout` for simulator calls. The command cleans up its actors and SUMO child, restores CARLA settings, and returns control of the signals to CARLA on exit. Capture and campaign integration are separate milestones. [Refactor progress](docs/refactor/PROGRESS.md)
+The default mirror radius is 150 m. Use `--render-radius` to change it or `--no-cull` to mirror the whole map. `--stretch-signals static` uses the imported SUMO signal programs. Use `--ready-timeout` for simulator startup and `--rpc-timeout` for simulator calls. The command cleans up its actors and SUMO child, restores CARLA settings, and returns control of the signals to CARLA on exit. [Refactor progress](docs/refactor/PROGRESS.md)
 
 ## 5. Record a dataset (one scenario)
 
@@ -105,13 +105,19 @@ post-processing run automatically (`--no-label`, `--no-postprocess` to skip).
 
 ### V2 single-run capture
 
-Set `--capture-dir` to a new directory and use a dedicated CARLA server with rendering enabled. The v2 command uses the existing roadside layout and accepts total or per-side radar counts.
+Choose `--engine v2` and use a dedicated asynchronous CARLA server on `Town10HD_Opt` with rendering enabled. The existing radar layout, output root and labeling options also apply to v2. Use a tick period representable in whole milliseconds, such as 20 Hz (50 ms) or 25 Hz (40 ms). Use `--carla-port` to select a separate server.
+
+```bash
+python run_fusion.py --engine v2 --scenario 3 --density 60 --duration 300 --radars 8 --rate-hz 20
+```
+
+The output includes the existing radar and camera CSVs, camera PNGs, actor geometry and sensor extrinsics. `capture_frames.jsonl` lists the received and missing sensors for each paired frame. `run_meta.json` summarizes completion and stream coverage. The existing Doppler and RCS postprocessing requires matched radar returns for calibration.
+
+For an exact step count and a specific new capture directory, use the lower-level command.
 
 ```bash
 python -m fusion.traffic_session --scenario 1 --steps 600 --radars 8 --ambient-vehicles 30 --capture-dir dataset/Data/sensor_capture_v2_example --label
 ```
-
-The output includes the existing radar and camera CSVs, camera PNGs, actor geometry and sensor extrinsics. `capture_frames.jsonl` lists the received and missing sensors for each paired frame. `run_meta.json` summarizes completion and stream coverage. `--label` runs the existing offline labeler. `--postprocess` also runs Doppler and RCS processing, which requires matched radar returns for calibration.
 
 ## 6. Record a campaign (several scenarios, one capture)
 
@@ -120,10 +126,12 @@ Write a campaign file (or save one from `python fusion_gui.py`).
 
 ```bash
 python run_fusion.py --campaign campaigns/example_campaign.json
+python run_fusion.py --engine v2 --campaign campaigns/example_campaign.json
 ```
 
-Actors are cleared between scenarios. Each row gets a `segment_id` /
-`scenario_id` column in `radar_data_labeled.csv`.
+For v2 in `fusion_gui.py`, select **v2** in **Engine** and click **Start campaign**. Saving the plan also saves the engine, so the CLI can use the saved selection. Older campaign files default to the legacy engine. An explicit `--engine` overrides the plan.
+
+V2 uses one capture directory and sensor rig across the campaign, and a fresh SUMO session for each row. Warm-up advances both simulators before recording starts. `segments.json` lists the inclusive CARLA frame range actually saved for each row. `campaign.json` reports completed, interrupted and skipped rows. The offline labeler uses `segments.json` to fill `segment_id` and `scenario_id` in `radar_data_labeled.csv`.
 
 ## 7. After a capture
 
@@ -142,6 +150,6 @@ python tools/plot_rcs_doppler.py Data/sensor_capture_XXXX
 
 ## Stopping
 
-Ctrl+C in the terminal. On Linux, `kill <pid>` also stops the runner cleanly.
-The GUI Stop button asks the runner to finish its current step and remove its
-CARLA actors, then force-stops it after 10 s.
+Use Ctrl+C in the terminal or **Stop** in the GUI. In v2, the coordinator checks the request between paired steps, saves confirmed frames, releases the rig and the active SUMO session, and restores CARLA settings. Any later campaign rows are skipped. For v2 the CLI exits `0` on completion, `130` on interruption, and `1` on a run or finalization error.
+
+When enabled, the scene cleanup and tree controls hide static environment objects until the map is reloaded.

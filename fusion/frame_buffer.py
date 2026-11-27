@@ -15,10 +15,11 @@ class JoinedFrame:
     measurements: dict[str, Any]
     missing: tuple[str, ...]
     status: str
+    segment: int | None = None
 
 
 class FrameBuffer:
-    def __init__(self, first_frame: int, sensors: tuple[str, ...], *, max_lag_frames: int):
+    def __init__(self, first_frame: int, sensors: tuple[str, ...], *, max_lag_frames: int, segment=None):
         if max_lag_frames < 1 or not sensors or len(sensors) != len(set(sensors)):
             raise ValueError("frame buffer needs a positive window and unique sensor labels")
         self._first = self._next = first_frame
@@ -26,6 +27,7 @@ class FrameBuffer:
         self._sensor_labels = sensors
         self._sensor_set = set(sensors)
         self._max_lag = max_lag_frames
+        self._segment = segment
         self._truth: dict[int, tuple[SimulationFrame, list[dict]]] = {}
         self._samples: dict[int, dict[str, Any]] = {}
         self._lock = Lock()
@@ -117,7 +119,7 @@ class FrameBuffer:
             frame, actors = self._truth.pop(self._next)
             self._samples.pop(self._next, None)
             ordered = {label: samples[label] for label in self._sensor_labels if label in samples}
-            frames.append(JoinedFrame(frame, actors, ordered, missing, status))
+            frames.append(JoinedFrame(frame, actors, ordered, missing, status, self._segment))
             self._statuses[status] += 1
             self._received.update(ordered.keys())
             self._next += 1

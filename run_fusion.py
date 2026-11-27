@@ -7,8 +7,8 @@ Example:
     python run_fusion.py --scenario 3 --density 60 --duration 300 \
         --radars 8 --rate-hz 20 --pedestrians 20 --bicycles 10
 
-Campaign (several scenarios, one capture) from a file saved by fusion_gui.py:
-    python run_fusion.py --campaign my_campaign.json
+V2 campaign (several scenarios, one capture) from a file saved by fusion_gui.py:
+    python run_fusion.py --engine v2 --campaign my_campaign.json
 
 Prereqs: CarlaUE4 running on Town10HD_Opt, SUMO_HOME set, venv active
 (carla, traci, sumolib installed). Run once first:  python traffic/build_network.py
@@ -22,6 +22,7 @@ import sys
 from fusion.config import FusionConfig, MAX_RADARS_PER_SIDE, split_radar_count
 from fusion.orchestrator import run
 from fusion.campaign import CampaignConfig, run_campaign
+from fusion.traffic_session import cooperative_stop
 
 
 def _bool_flag(parser, name, default, help_on, help_off):
@@ -34,11 +35,8 @@ def _bool_flag(parser, name, default, help_on, help_off):
 
 def main() -> int:
     # UTF-8 stdout on Windows consoles.
-    try:
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -73,12 +71,12 @@ def main() -> int:
                "run radar labeling after capture", "skip radar labeling")
     _bool_flag(p, "postprocess", True,
                "run post-processing after capture", "skip post-processing")
-    p.add_argument("--capture-base-dir", default="", help="override output root")
+    p.add_argument("--capture-base-dir", help="override output root")
     # shared clock / carla
     p.add_argument("--rate-hz", type=float, default=20.0,
                    help="tick rate: CARLA fixed_delta = radar tick = SUMO step")
-    p.add_argument("--carla-host", default="127.0.0.1")
-    p.add_argument("--carla-port", type=int, default=2000)
+    p.add_argument("--carla-host")
+    p.add_argument("--carla-port", type=int)
     p.add_argument("--tm-port", type=int, default=8000, help="TrafficManager port")
     # orchestration
     _bool_flag(p, "scene-cleanup", True,
@@ -86,16 +84,28 @@ def main() -> int:
     _bool_flag(p, "clear-trees", True,
                "hide trees over the monitored stretch", "keep trees")
     p.add_argument("--sync-timeout", type=float, default=180.0)
+    p.add_argument("--engine", choices=("legacy", "v2"),
+                   help="capture engine (default: legacy or the saved campaign setting)")
     p.add_argument("--campaign", default="",
-                   help="run a campaign JSON (saved from fusion_gui.py); all other "
-                        "flags are ignored except --carla-host/--carla-port/--radar-pps")
+                   help="run a saved campaign JSON; --engine, --carla-host, --carla-port, "
+                        "--radar-pps and --capture-base-dir can override its settings")
     args = p.parse_args()
 
     if args.campaign:
-        ccfg = CampaignConfig.load(args.campaign)
-        ccfg.carla_host, ccfg.carla_port = args.carla_host, args.carla_port
-        if args.radar_pps is not None:
-            ccfg.radar_points_per_second = args.radar_pps
+        try:
+            ccfg = CampaignConfig.load(args.campaign)
+        except (OSError, TypeError, ValueError) as exc:
+            p.error(f"cannot load campaign: {exc}")
+        for name, value in (
+            ("engine", args.engine), ("carla_host", args.carla_host), ("carla_port", args.carla_port),
+            ("radar_points_per_second", args.radar_pps), ("capture_base_dir", args.capture_base_dir),
+        ):
+            if value is not None:
+                setattr(ccfg, name, value)
+        if ccfg.engine == "v2":
+            with cooperative_stop() as stop_event:
+                result = run_campaign(ccfg, stop_event=stop_event)
+            return _exit_code(result)
         return 0 if run_campaign(ccfg).ok else 1
 
     south, north = split_radar_count(8 if args.radars is None else args.radars)
@@ -113,13 +123,28 @@ def main() -> int:
         radars_south=south, radars_north=north, radar_height_m=args.radar_height,
         radar_points_per_second=args.radar_pps or 0,
         label=args.label, postprocess=args.postprocess,
-        capture_base_dir=args.capture_base_dir,
-        rate_hz=args.rate_hz, carla_host=args.carla_host, carla_port=args.carla_port,
+        capture_base_dir=args.capture_base_dir or "",
+        rate_hz=args.rate_hz, carla_host=args.carla_host or "127.0.0.1",
+        carla_port=2000 if args.carla_port is None else args.carla_port,
         traffic_manager_port=args.tm_port,
         scene_cleanup=args.scene_cleanup, clear_trees=args.clear_trees,
         sync_timeout=args.sync_timeout,
     )
+    if args.engine == "v2":
+        from fusion.campaign_v2 import run_single_v2
+
+        with cooperative_stop() as stop_event:
+            result = run_single_v2(cfg, stop_event=stop_event)
+        return _exit_code(result)
     result = run(cfg)
+    return 0 if result.ok else 1
+
+
+def _exit_code(result):
+    if result.error:
+        return 1
+    if result.stopped:
+        return 130
     return 0 if result.ok else 1
 
 

@@ -122,6 +122,7 @@ class CampaignConfig:
     sensor_settle_s: float = 5.0
     cleanup_verify_s: float = 15.0
     runner_start_timeout_s: float = 240.0
+    engine: str = "legacy"
 
     @property
     def fixed_delta_s(self) -> float:
@@ -133,6 +134,8 @@ class CampaignConfig:
 
     def validate(self) -> list:
         errs = []
+        if self.engine not in ("legacy", "v2"):
+            errs.append("engine must be legacy or v2")
         if not self.runs:
             errs.append("the campaign has no runs")
         for i, r in enumerate(self.runs, 1):
@@ -202,6 +205,7 @@ class CampaignResult:
     capture_dir: str = ""
     error: str = ""
     rows: list = field(default_factory=list)
+    stopped: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -326,6 +330,11 @@ def run_campaign(cfg: CampaignConfig, log: list | None = None, on_event=None,
     progress (row status / capture state) for a UI; ``stop_event`` ends the
     campaign early (current row truncated, rest skipped, capture still labels).
     """
+    if cfg.engine == "v2":
+        from .campaign_v2 import run_campaign_v2
+
+        return run_campaign_v2(cfg, log=log, on_event=on_event, stop_event=stop_event)
+
     lg = log if log is not None else []
     say = lambda m: _orc._say(lg, m)  # noqa: E731
     stop_event = stop_event or threading.Event()
@@ -617,6 +626,13 @@ def _write_campaign_record(cfg: CampaignConfig, result: CampaignResult,
     runners = {}
     for p in sorted(control_dir.glob("runner_*.json")):
         runners[p.stem] = _read_json(p)
+    try:
+        write_campaign_record(cfg, result, runners)
+    except OSError as exc:
+        _orc._say(log, f"[campaign] could not write campaign.json: {exc}")
+
+
+def write_campaign_record(cfg: CampaignConfig, result: CampaignResult, runners: dict) -> None:
     record = {
         "campaign": cfg.to_dict(),
         "ok": result.ok,
@@ -625,8 +641,8 @@ def _write_campaign_record(cfg: CampaignConfig, result: CampaignResult,
         "runner_status": runners,
         "written": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    try:
-        _write_json_atomic(Path(result.capture_dir) / "campaign.json", record)
-        cfg.save(Path(result.capture_dir) / "campaign_plan.json")
-    except OSError as exc:
-        _orc._say(log, f"[campaign] could not write campaign.json: {exc}")
+    if cfg.engine == "v2":
+        record["stopped"] = result.stopped
+    directory = Path(result.capture_dir)
+    _write_json_atomic(directory / "campaign.json", record)
+    _write_json_atomic(directory / "campaign_plan.json", cfg.to_dict())

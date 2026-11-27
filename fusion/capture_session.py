@@ -1,5 +1,6 @@
 """Own a v2 roadside rig and record only verified paired simulator frames."""
 
+from collections import Counter
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,6 +129,11 @@ class CaptureSession:
         self._sensors = sensors
         self._metadata = metadata
         self._buffer: FrameBuffer | None = None
+        self._first_frame = self._last_frame = None
+        self._statuses: Counter = Counter()
+        self._received: Counter = Counter(dict.fromkeys(sensors, 0))
+        self._ignored: Counter = Counter()
+        self._max_lag: Counter = Counter()
         self._snapshot_actors = legacy.make_fast_tick_snapshot_fn(self._world, prune_absent=True)
         self._radar_ids = {label: actor.id for label, actor in sensors.items() if label != "C10"}
         camera = sensors["C10"]
@@ -144,7 +150,7 @@ class CaptureSession:
         if buffer is not None:
             buffer.offer(label, int(data.frame), data)
 
-    def begin(self, snapshot):
+    def prepare(self, snapshot):
         radar_rows = []
         camera_rows = []
         for label, actor in self._sensors.items():
@@ -155,7 +161,13 @@ class CaptureSession:
             (camera_rows if label == "C10" else radar_rows).append(row)
         write_radar_extrinsics(radar_rows, self._directory)
         write_camera_extrinsics(camera_rows, self._directory)
-        self._buffer = FrameBuffer(snapshot.frame + 1, tuple(self._sensors), max_lag_frames=MAX_LAG_FRAMES)
+
+    def start_window(self, first_frame, *, segment=None):
+        if self._buffer is not None:
+            raise RuntimeError("capture already has an active recording window")
+        self._buffer = FrameBuffer(
+            first_frame, tuple(self._sensors), max_lag_frames=MAX_LAG_FRAMES, segment=segment,
+        )
 
     def record(self, frame, snapshot, required_actor_ids):
         self._writer.check()
@@ -167,41 +179,68 @@ class CaptureSession:
             raise RuntimeError(f"missing ground truth for CARLA actors {sorted(missing)} in frame {snapshot.frame}")
         self._submit(self._buffer.confirm(frame, actors))
 
-    def stop_recording(self):
-        self._buffer.end_recording()
-
-    def collect_tail(self):
-        self._submit(self._buffer.pop_ready())
-        return self._buffer.pending
-
-    def wait_for_tail(self):
+    def drain_window(self, tick):
+        buffer = self._buffer
+        if buffer is None:
+            return
+        buffer.end_recording()
+        for _ in range(TAIL_TICKS):
+            self._submit(buffer.pop_ready())
+            if not buffer.pending:
+                break
+            tick()
         deadline = monotonic() + 0.5
-        while self.collect_tail() and monotonic() < deadline:
-            sleep(0.01)
+        while buffer.pending and monotonic() < deadline:
+            self._submit(buffer.pop_ready())
+            if buffer.pending:
+                sleep(0.01)
+
+    def finish_window(self, *, flush=False):
+        buffer = self._buffer
+        if buffer is None:
+            return {}
+        self._submit(buffer.finish())
+        self._buffer = None
+        stats = buffer.stats()
+        if stats["first_frame"] is not None:
+            if self._first_frame is None:
+                self._first_frame = stats["first_frame"]
+            self._last_frame = stats["last_frame"]
+        self._statuses.update(stats["frames"])
+        self._received.update(stats["received"])
+        self._ignored.update(stats["ignored"])
+        self._max_lag |= Counter(stats["max_arrival_lag_frames"])
+        if flush:
+            self._writer.flush()
+        return stats
 
     def _submit(self, frames):
         for item in frames:
             self._writer.submit(item)
 
     def close(self, status):
-        stats = {}
         try:
             try:
-                if self._buffer is not None:
-                    self._submit(self._buffer.finish())
-                    stats = self._buffer.stats()
+                self.finish_window()
             finally:
                 self._writer.close()
-            missing = [label for label, received in stats.get("received", {}).items() if not received]
+            missing = [label for label, received in self._received.items() if not received]
             if status == "complete" and missing:
                 raise RuntimeError("no captured measurements from " + ", ".join(missing))
-            if status == "complete" and any(key != "complete" for key in stats.get("frames", {})):
+            if status == "complete" and any(key != "complete" for key in self._statuses):
                 status = "partial"
         except BaseException:
             status = "failed"
             raise
         finally:
-            self.write_meta("stop", status=status, stats=stats)
+            self.write_meta("stop", status=status, stats={
+                "first_frame": self._first_frame,
+                "last_frame": self._last_frame,
+                "frames": dict(self._statuses),
+                "received": dict(self._received),
+                "ignored": dict(self._ignored),
+                "max_arrival_lag_frames": {label: self._max_lag[label] for label in self._received},
+            })
 
     def write_meta(self, phase, *, status, stats=None):
         legacy.write_run_meta(
@@ -212,7 +251,7 @@ class CaptureSession:
 
 
 @contextmanager
-def open_capture(session, options: CaptureOptions, *, scenario, seed, sumo_version):
+def open_capture(session, options: CaptureOptions, *, scenario, seed, sumo_version, campaign_name=None):
     directory = options.directory.resolve()
     directory.mkdir(parents=True, exist_ok=False)
     with open_sensor_rig(session, options) as sensors:
@@ -245,6 +284,8 @@ def open_capture(session, options: CaptureOptions, *, scenario, seed, sumo_versi
                 "DATASET_SYNC_FIXED_DELTA_S": str(session.fixed_delta_s),
             },
         }
+        if campaign_name is not None:
+            metadata["campaign_name"] = campaign_name
         capture = CaptureSession(session, directory, sensors, metadata)
         try:
             capture.write_meta("start", status="recording")

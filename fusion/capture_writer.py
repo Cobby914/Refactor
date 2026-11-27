@@ -4,7 +4,7 @@ from contextlib import ExitStack
 import json
 from pathlib import Path
 from queue import Full, Queue
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from time import monotonic
 
 from dataset.capture import CaptureRadarCameraData as legacy
@@ -21,7 +21,7 @@ class CaptureWriter:
         self._camera_fov = camera_fov
         self._camera_folder = directory / "camera_frames" / f"camera_{camera_id}"
         self._camera_folder.mkdir(parents=True)
-        self._queue: Queue[JoinedFrame | None] = Queue(maxsize=8)
+        self._queue: Queue[JoinedFrame | Event | None] = Queue(maxsize=8)
         self._error: Exception | None = None
         self._thread = Thread(target=self._run, name="v2-capture-writer", daemon=True)
         self._thread.start()
@@ -52,6 +52,16 @@ class CaptureWriter:
             raise TimeoutError("v2 capture writer did not finish within 60 seconds")
         self.check()
 
+    def flush(self):
+        """Flush row output before committing the segment range."""
+        barrier = Event()
+        self._put(barrier)
+        deadline = monotonic() + 60
+        while not barrier.wait(0.1):
+            self.check()
+            if monotonic() >= deadline:
+                raise TimeoutError("v2 capture writer did not flush within 60 seconds")
+
     def _run(self):
         try:
             with ExitStack() as files:
@@ -64,25 +74,33 @@ class CaptureWriter:
                 lock = Lock()
                 counts = {"radar_messages": 0, "radar_detections": 0, "radar_scored": 0}
                 while (item := self._queue.get()) is not None:
+                    if isinstance(item, Event):
+                        for stream in (radar_file, camera_file, gt, manifest):
+                            stream.flush()
+                        item.set()
+                        continue
                     frame = item.simulation
-                    gt.write(serialize_actor_frame(frame.carla_frame, item.actors))
+                    gt.write(serialize_actor_frame(frame.carla_frame, item.actors, item.segment))
                     for label, measurement in item.measurements.items():
                         if label == "C10":
                             path = str(self._camera_folder / f"frame_{frame.carla_frame:08d}.png")
                             legacy._encode_carla_image_png(measurement, path)
                             camera_writer.writerow(legacy.camera_metadata_row(
                                 measurement, self._camera_id, label, path,
-                                self._camera_fov, item.actors,
+                                self._camera_fov, item.actors, item.segment,
                             ))
                         else:
                             legacy.process_radar_measurement_fast(
                                 measurement, self._radar_ids[label], label, None,
                                 radar_writer=radar_writer, lock=lock, counts=counts,
                             )
-                    manifest.write(json.dumps({
+                    record = {
                         "frame": frame.carla_frame, "step": frame.step,
                         "sumo_time_s": frame.sumo_time_s, "status": item.status,
                         "received": list(item.measurements), "missing": item.missing,
-                    }, separators=(",", ":")) + "\n")
+                    }
+                    if item.segment is not None:
+                        record["segment_id"] = item.segment
+                    manifest.write(json.dumps(record, separators=(",", ":")) + "\n")
         except Exception as exc:
             self._error = exc

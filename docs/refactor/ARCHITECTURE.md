@@ -52,7 +52,13 @@ At normal completion, the coordinator closes the recording window, advances up t
 
 The [writer](../../fusion/capture_writer.py) uses an eight-frame queue and runs PNG encoding and serialization off the coordinator thread. Storage backpressure can slow the coordinator in wall time. Worker failures surface to the caller. The writer reuses the legacy CSV columns, radar return rows, camera metadata, PNG encoding and actor geometry serialization. The only new output is the frame manifest. Optional offline labeling and postprocessing run after simulator cleanup in fresh processes.
 
-The legacy dataset CLI and GUI remain available. The v2 single-run capture is opt-in via `--capture-dir`. Campaign and GUI integration is the next increment.
+## CLI and campaign lifecycle
+
+`run_fusion.py --engine v2` and the GUI's **Engine** selector use the [same v2 campaign coordinator](../../fusion/campaign_v2.py). A single run uses one row with zero paired warm-up. The lower-level `fusion.traffic_session` command can still record an exact number of steps into an explicit directory. Older campaign files select the legacy engine by default.
+
+One CARLA session and sensor rig span a v2 campaign. Each row builds its own routes, owns a fresh SUMO child, starts its own actor and signal adapters, and establishes a new paired clock origin. The coordinator counts successful paired steps for warm-up and opens a frame buffer for the recording phase. Row teardown releases its mirrors, signals and SUMO connection before the next row begins. Static scene setup is applied once per campaign when enabled.
+
+The writer flushes row output before the coordinator commits the actual inclusive range to `segments.json`, which is consumed by the existing offline labeler. The camera CSV, actor log and frame manifest carry the segment ID. The stop request finishes confirmed frames and skips the remaining rows. If a simulator step fails after advancing either clock, the coordinator terminates the run and saves the confirmed prefix without retrying that step. A new run takes a fresh clock origin.
 
 ## Next interfaces and remaining decisions
 

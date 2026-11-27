@@ -25,6 +25,7 @@ from __future__ import annotations
 import queue
 import sys
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 try:
@@ -229,6 +230,7 @@ class CampaignGUI:
         self.runs: list[RunSpec] = []
         self.status: list[str] = []
         self._running = False
+        self._campaign_defaults = CampaignConfig()
 
         pad = {"padx": 6, "pady": 3}
         frm = ttk.Frame(root, padding=10)
@@ -314,12 +316,12 @@ class CampaignGUI:
         self._refresh_radar_total()
 
         ttk.Label(sens, text="Rate (Hz)").grid(row=2, column=0, sticky="w", padx=(0, 4), pady=(4, 0))
-        self.rate = tk.IntVar(value=20)
+        self.rate = tk.DoubleVar(value=20)
         ttk.Spinbox(sens, from_=1, to=100, textvariable=self.rate, width=6).grid(
             row=2, column=1, sticky="w", pady=(4, 0))
         ttk.Label(sens, text="Warm-up per run (s)").grid(row=2, column=2, sticky="w",
                                                         padx=(16, 4), pady=(4, 0))
-        self.warmup = tk.IntVar(value=20)
+        self.warmup = tk.DoubleVar(value=20)
         ttk.Spinbox(sens, from_=0, to=300, increment=5, textvariable=self.warmup, width=6,
                     command=self._refresh_totals).grid(row=2, column=3, sticky="w", pady=(4, 0))
         self.warmup.trace_add("write", lambda *_: self._refresh_totals())
@@ -341,6 +343,12 @@ class CampaignGUI:
         # --- start / stop ----------------------------------------------------
         run_row = ttk.Frame(frm)
         run_row.grid(row=6, column=0, sticky="ew", **pad)
+        ttk.Label(run_row, text="Engine").pack(side="left", padx=(0, 4))
+        self.engine = tk.StringVar(value=self._campaign_defaults.engine)
+        self.engine_selector = ttk.Combobox(
+            run_row, textvariable=self.engine, values=("legacy", "v2"), state="readonly", width=8,
+        )
+        self.engine_selector.pack(side="left", padx=(0, 12))
         self.start_btn = ttk.Button(run_row, text="Start campaign", command=self._start)
         self.start_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self.stop_btn = ttk.Button(run_row, text="Stop", command=self._stop, state="disabled")
@@ -394,7 +402,7 @@ class CampaignGUI:
 
     def _refresh_totals(self):
         try:
-            warm = max(0, int(self.warmup.get()))
+            warm = max(0, float(self.warmup.get()))
         except (tk.TclError, ValueError):
             warm = 0
         rec = sum(r.duration for r in self.runs)
@@ -500,8 +508,10 @@ class CampaignGUI:
 
     # -- persistence -------------------------------------------------------------
     def _config(self) -> CampaignConfig:
-        return CampaignConfig(
+        return replace(
+            self._campaign_defaults,
             name=self.name.get().strip(),
+            engine=self.engine.get(),
             runs=[RunSpec.from_dict(vars(r)) for r in self.runs],
             radars_south=self._int_var(self.radars_south),
             radars_north=self._int_var(self.radars_north),
@@ -516,14 +526,16 @@ class CampaignGUI:
         )
 
     def _apply_config(self, cfg: CampaignConfig):
+        self._campaign_defaults = cfg
         self.name.set(cfg.name)
+        self.engine.set(cfg.engine)
         self.runs = list(cfg.runs)
         self.status = ["queued"] * len(self.runs)
         self.radars_south.set(int(cfg.radars_south))
         self.radars_north.set(int(cfg.radars_north))
         self.radar_height.set(float(cfg.radar_height_m))
-        self.rate.set(int(cfg.rate_hz))
-        self.warmup.set(int(cfg.warmup_s))
+        self.rate.set(cfg.rate_hz)
+        self.warmup.set(cfg.warmup_s)
         self.label.set(cfg.label)
         self.post.set(cfg.postprocess)
         self.cleanup.set(cfg.scene_cleanup)
@@ -578,6 +590,7 @@ class CampaignGUI:
         self._running = running
         self.start_btn.configure(state="disabled" if running else "normal")
         self.stop_btn.configure(state="normal" if running else "disabled")
+        self.engine_selector.configure(state="disabled" if running else "readonly")
         for b in self._edit_buttons:
             b.configure(state="disabled" if running else "normal")
 
@@ -600,10 +613,10 @@ class CampaignGUI:
         self.capture_state.configure(text="Capture: starting ...")
         self._stop_event = threading.Event()
         log = _QueueLog(self._q)
-        self._log(f"[gui] starting campaign: {len(cfg.runs)} run(s), "
+        self._log(f"[gui] starting {cfg.engine} campaign: {len(cfg.runs)} run(s), "
                   f"{cfg.radar_count} radars ({cfg.radars_south}S+{cfg.radars_north}N, "
-                  f"{cfg.radar_height_m:g} m) @ {cfg.rate_hz:.0f} Hz, "
-                  f"warm-up {cfg.warmup_s:.0f} s")
+                  f"{cfg.radar_height_m:g} m) @ {cfg.rate_hz:g} Hz, "
+                  f"warm-up {cfg.warmup_s:g} s")
 
         def _job():
             try:
@@ -621,9 +634,8 @@ class CampaignGUI:
         if self._stop_event is not None and not self._stop_event.is_set():
             if messagebox.askyesno(
                     "Stop campaign",
-                    "Stop now? The current run is cut short, the remaining runs are "
-                    "skipped, and the capture still labels + post-processes what was "
-                    "recorded."):
+                    "Stop now? The campaign will save the frames already recorded, "
+                    "skip later runs, and perform any enabled offline processing."):
                 self._stop_event.set()
                 self.stop_btn.configure(state="disabled")
                 self._log("[gui] stop requested ...")
@@ -632,8 +644,8 @@ class CampaignGUI:
         if self._running:
             messagebox.showinfo(
                 "Campaign running",
-                "A campaign is running. Press Stop first and wait until labeling "
-                "finishes; closing now would orphan the capture and runner processes.")
+                "A campaign is running. Press Stop and wait for capture cleanup "
+                "and any offline processing to finish.")
             return
         self._autosave()
         self.root.destroy()
@@ -667,10 +679,14 @@ class CampaignGUI:
             run_dir = ev.get("run_dir", "")
             self.capture_state.configure(text=f"Capture: {state}   {run_dir}")
         elif kind == "finished":
-            ok = ev.get("ok")
+            if ev.get("ok"):
+                status = "done"
+            elif ev.get("stopped") and not ev.get("error"):
+                status = "stopped"
+            else:
+                status = "finished with errors"
             self.capture_state.configure(
-                text=("Capture: done   " if ok else "Capture: finished with errors   ")
-                + (ev.get("run_dir") or ""))
+                text=f"Capture: {status}   {ev.get('run_dir') or ''}")
 
     def _drain(self):
         try:
