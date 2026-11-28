@@ -121,3 +121,30 @@ python -B tests/benchmark_capture.py --port 22000 --engine v2 --radars 14 --rada
 ```
 
 Set `DATASET_CAMERA_ENCODER_THREADS=1` in the environment to reproduce the one-worker trial.
+
+## Batched radar CSV follow-up
+
+The November 27 comparison used one baseline run from `8c830ba` and one batched-writer run with the same host and S01 settings. Each run used 14 radars at the default 15,000 rays/s, 8 s of warm-up, 60 s of recording, and two PNG workers.
+
+| Measurement | Per-return writer | Batched writer |
+| --- | ---: | ---: |
+| Recording wall time | 106.08 s | 40.04 s |
+| Whole campaign wall time | 110.30 s | 44.28 s |
+| Radar row formatting, median per frame | 37.82 ms | 12.31 ms |
+| CSV serialization and buffered output, median per frame | 30.54 ms | 2.05 ms |
+| Total radar CSV stage, median per frame | 68.47 ms | 14.57 ms |
+| Paired-step p95 | 152.18 ms | 46.78 ms |
+| Time between recorded tick starts, p95 | 149.25 ms | 47.71 ms |
+| Paired frames saved | 1,200 | 1,200 |
+| Radar scans written | 16,800 | 16,800 |
+| Radar returns written | 9,708,118 | 9,708,118 |
+
+The baseline formatting timer ends when the per-scan writer enters its lock. The remainder includes CSV serialization and buffered file writes. The batched writer timer splits when the preformatted scan is ready for the stream's `write` call. These are wall-clock measurements and include scheduling delays and buffered output.
+
+V2 formats repeated scan fields once, iterates the packed CARLA returns, and writes each scan to the existing CSV in one call. CARLA 0.9.16 stores velocity, azimuth, altitude and depth as four native float32 values per detection. V2 writes the dataset's existing field order and six-decimal formatting. The legacy engine continues using its existing writer. [CARLA detection layout](https://github.com/carla-simulator/carla/blob/0.9.16/LibCarla/source/carla/sensor/data/RadarData.h) · [CARLA serializer](https://github.com/carla-simulator/carla/blob/0.9.16/LibCarla/source/carla/sensor/s11n/RadarSerializer.h)
+
+The CSV headers, radar scan counts, and frame order matched across the two captures. After normalizing frame IDs and excluding per-run sensor IDs and absolute timestamps, 31 of 9,708,118 return payloads differed across the independent runs. The live integration suite compared both writers on the same CARLA scan for every sensor at each of the four supported layouts. Those same-scan comparisons matched byte for byte.
+
+An 80-frame excerpt from the optimized full-rate capture contained 647,802 returns. The labeler found 8,300 matches and reported zero missing actor frames. Doppler/RCS processing completed and PointNet built all 80 frames with their expected scenario and segment IDs.
+
+To reproduce, use the same full-rate command as above with `DATASET_CAMERA_ENCODER_THREADS=2`. Copy the current benchmark harness into an export of `8c830ba` for the per-return baseline. Use fresh output paths.

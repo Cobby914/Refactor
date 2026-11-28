@@ -7,12 +7,13 @@ import json
 from pathlib import Path
 from queue import Full, Queue, SimpleQueue
 from tempfile import TemporaryDirectory
-from threading import BoundedSemaphore, Event, Lock, Thread
+from threading import BoundedSemaphore, Event, Thread
 from time import monotonic
 
 from dataset.capture import CaptureRadarCameraData as legacy
 from capture.actor_frame_log import serialize_actor_frame
 
+from . import radar_csv
 from .frame_buffer import JoinedFrame
 
 
@@ -134,14 +135,12 @@ class CaptureWriter:
 
     def _write_frames(self):
         with ExitStack() as files:
-            radar_file, radar_writer = legacy.setup_radar_writer(self._directory / "radar_data.csv")
+            radar_file, _ = legacy.setup_radar_writer(self._directory / "radar_data.csv")
             files.enter_context(radar_file)
             camera_file, camera_writer = legacy.setup_camera_writer(self._directory / "camera_data.csv")
             files.enter_context(camera_file)
             gt = files.enter_context((self._directory / "actor_frames.jsonl").open("w", encoding="utf-8"))
             manifest = files.enter_context((self._directory / "capture_frames.jsonl").open("w", encoding="utf-8"))
-            lock = Lock()
-            counts = {"radar_messages": 0, "radar_detections": 0, "radar_scored": 0}
             while (pending := self._queue.get()) is not None:
                 if isinstance(pending, Event):
                     for stream in (radar_file, camera_file, gt, manifest):
@@ -162,10 +161,7 @@ class CaptureWriter:
                                 self._camera_fov, item.actors, item.segment,
                             ))
                         else:
-                            legacy.process_radar_measurement_fast(
-                                measurement, self._radar_ids[label], label, None,
-                                radar_writer=radar_writer, lock=lock, counts=counts,
-                            )
+                            radar_csv.write_radar_scan(radar_file, measurement, self._radar_ids[label], label)
                     record = {
                         "frame": frame.carla_frame, "step": frame.step,
                         "sumo_time_s": frame.sumo_time_s, "status": item.status,

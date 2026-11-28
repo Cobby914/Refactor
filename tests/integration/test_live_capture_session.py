@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import signal
 from tempfile import TemporaryDirectory
+from threading import Lock
 import unittest
+from unittest.mock import patch
 
 from fusion.traffic_session import run_traffic
 from traffic.validate_scenarios import build_files
@@ -48,12 +50,32 @@ class LiveCaptureSessionTests(unittest.TestCase):
 
     def test_four_radar_layouts_write_exact_frames_and_legacy_files(self):
         from PIL import Image
+        from dataset.capture.CaptureRadarCameraData import process_radar_measurement_fast
         from dataset.capture.LabelRadarCapture import label_radar_capture_dir
+        from fusion import radar_csv
+
+        write_scan = radar_csv.write_radar_scan
+        checked = set()
+
+        def compare_first_scan(stream, measurement, sensor_id, label):
+            if label not in checked and len(measurement):
+                self.assertEqual(len(measurement.raw_data), 16 * len(measurement))
+                reference = StringIO(newline="")
+                process_radar_measurement_fast(
+                    measurement, sensor_id, label, None,
+                    radar_writer=csv.writer(reference), lock=Lock(),
+                    counts=dict(radar_messages=0, radar_detections=0, radar_scored=0),
+                )
+                self.assertEqual(radar_csv.format_radar_scan(measurement, sensor_id, label), reference.getvalue())
+                checked.add(label)
+            write_scan(stream, measurement, sensor_id, label)
 
         for count in (4, 8, 12, 14):
             with self.subTest(radars=count):
                 directory = self.root / f"sensor_capture_v2_{count}"
-                run = self.capture(directory, count)
+                checked.clear()
+                with patch.object(radar_csv, "write_radar_scan", side_effect=compare_first_scan):
+                    run = self.capture(directory, count)
                 frames = self.read_jsonl(directory / "capture_frames.jsonl")
                 ground_truth = self.read_jsonl(directory / "actor_frames.jsonl")
                 expected_ids = list(range(run.final_frame.carla_frame - 31, run.final_frame.carla_frame + 1))
@@ -70,6 +92,7 @@ class LiveCaptureSessionTests(unittest.TestCase):
 
                 meta = self.read_json(directory / "run_meta.json")
                 label_set = {"C10", *(f"R{index}" for index in range(1, count + 1))}
+                self.assertEqual(checked, label_set - {"C10"})
                 self.assertEqual(meta["radar_count"], count)
                 self.assertEqual(meta["camera_count"], 1)
                 self.assertEqual(meta["capture_status"], "complete")

@@ -130,3 +130,11 @@ Keep v2 opt-in while profiling the recording path and validating sustained throu
 - All trials kept the expected paired frames, matching radar return counts and camera/actor coverage. The four tuned 1,200 rays/s captures passed labeling, Doppler/RCS processing and PointNet frame building. All 17 unit tests and 14 live integration tests passed, including ordered commits after out-of-order encoding, writer failure cleanup, the bounded frame queue, GUI Stop, and recovery from an injected clock timeout.
 
 V2 remains opt-in. Sustained full-rate recording on the test host still exceeds real time.
+
+## 2026-11-27 · Step 8
+
+- Profiled the per-return writer and batched the v2 CSV output by radar scan. The [batched writer](../../fusion/radar_csv.py) reuses scan-level fields and reads packed returns. It preserves the existing schema, rounding, detection order, and CSV quoting.
+- In the [matched full-rate comparison](BENCHMARK.md#batched-radar-csv-follow-up), 60 simulated seconds took 40.04 wall seconds, down from 106.08 s. Median radar CSV time fell from 68.47 to 14.57 ms per frame. Paired-step p95 fell from 152.18 to 46.78 ms. Both runs recorded all 1,200 paired frames and 9,708,118 radar returns.
+- All 19 unit tests and 14 live integration tests passed. The live suite compared the two writers on identical measurements for every radar in each of the four layouts. The existing labeling, Doppler/RCS and PointNet pipeline passed on an 80-frame excerpt containing 647,802 full-rate returns. CARLA restored its settings and released the rig. The dedicated test server was stopped.
+
+V2 remains opt-in while repeated full-rate multi-row campaigns are validated.

@@ -29,6 +29,20 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+class TimedRadarLock:
+    """Measure the legacy helper's CSV serialization and buffered writes once per scan."""
+
+    def __init__(self, lock):
+        self.lock = lock
+
+    def __enter__(self):
+        self.before_write = perf_counter()
+        return self.lock.__enter__()
+
+    def __exit__(self, *error):
+        return self.lock.__exit__(*error)
+
+
 class Trace:
     def __init__(self, stack):
         self.stack = stack
@@ -75,12 +89,7 @@ class Trace:
 
         self.stack.enter_context(patch.object(carla.Sensor, "listen", observe_callbacks))
         self.wrap(carla.World, "tick", tick)
-        def radar_written(args, _, start, end):
-            measurement, _, label, _ = args
-            self.samples["radar_written"].append((label, measurement.frame, len(measurement)))
-            self.samples["radar_csv"].append((measurement.frame, start, end))
-
-        self.wrap(capture, "process_radar_measurement_fast", radar_written)
+        self.trace_legacy_radar(capture)
         if not legacy:
             self.wrap(capture, "_encode_carla_image_png", lambda args, _, start, end:
                       self.samples["png_encode"].append((args[0].frame, start, end)))
@@ -100,6 +109,46 @@ class Trace:
                       self.backlogs.update(radar_queue=args[0].pending))
             self.wrap(capture.CameraFrameWriter, "__init__", lambda args, *_:
                       self.backlogs.update(camera_queue=args[0].pending))
+
+    def trace_legacy_radar(self, capture):
+        original = capture.process_radar_measurement_fast
+
+        @wraps(original)
+        def timed_scan(measurement, sensor_id, label, actor, *, radar_writer, lock, counts):
+            timed_lock = TimedRadarLock(lock)
+            start = perf_counter()
+            original(measurement, sensor_id, label, actor, radar_writer=radar_writer, lock=timed_lock, counts=counts)
+            self.add_radar_sample(measurement, label, start, timed_lock.before_write, perf_counter())
+
+        self.stack.enter_context(patch.object(capture, "process_radar_measurement_fast", timed_scan))
+
+    def add_radar_sample(self, measurement, label, start, before_write, end):
+        frame = measurement.frame
+        self.samples["radar_written"].append((label, frame, len(measurement)))
+        self.samples["radar_csv"].append((frame, start, end))
+        self.samples["radar_format"].append((frame, start, before_write))
+        self.samples["radar_output"].append((frame, before_write, end))
+
+    def trace_batched_radar(self, radar_csv):
+        original_format = radar_csv.format_radar_scan
+        original_write = radar_csv.write_radar_scan
+        before_write = None
+
+        @wraps(original_format)
+        def timed_format(*args):
+            nonlocal before_write
+            rows = original_format(*args)
+            before_write = perf_counter()
+            return rows
+
+        @wraps(original_write)
+        def timed_write(stream, measurement, sensor_id, label):
+            start = perf_counter()
+            original_write(stream, measurement, sensor_id, label)
+            self.add_radar_sample(measurement, label, start, before_write, perf_counter())
+
+        self.stack.enter_context(patch.object(radar_csv, "format_radar_scan", timed_format))
+        self.stack.enter_context(patch.object(radar_csv, "write_radar_scan", timed_write))
 
 
 def trace_legacy_child(directory, script, arguments):
@@ -178,7 +227,9 @@ def summarize(directory, trace, run_end):
         with manifest.open(encoding="utf-8") as file:
             summary["sumo_recording_end_s"] = json.loads(list(file)[-1])["sumo_time_s"]
         summary["recording_stages"] = {}
-        for stage in ("ground_truth", "writer_submit", "png_encode", "camera_metadata", "radar_csv"):
+        stages = ("ground_truth", "writer_submit", "png_encode", "camera_metadata", "radar_csv",
+                  "radar_format", "radar_output")
+        for stage in stages:
             by_frame = defaultdict(float)
             for frame, start, end in trace[stage]:
                 if frame in frames:
@@ -232,15 +283,17 @@ def run_trial(args):
 
             stack.enter_context(patch.object(orchestrator, "_popen", launch_instrumented))
         else:
+            from fusion import capture_writer
             from fusion.actor_mirror import ActorMirror
             from fusion.capture_session import legacy
-            from fusion.capture_writer import CaptureWriter
             from fusion.simulation_engine import SimulationEngine
 
             trace.capture(carla, legacy, legacy=False)
-            trace.wrap(CaptureWriter, "__init__", lambda args, *_:
+            if hasattr(capture_writer, "radar_csv"):
+                trace.trace_batched_radar(capture_writer.radar_csv)
+            trace.wrap(capture_writer.CaptureWriter, "__init__", lambda args, *_:
                        trace.backlogs.update(joined_frame_queue=args[0]._queue.qsize))
-            trace.wrap(CaptureWriter, "submit", lambda args, _, start, end:
+            trace.wrap(capture_writer.CaptureWriter, "submit", lambda args, _, start, end:
                        trace.samples["writer_submit"].append((args[1].simulation.carla_frame, start, end)))
             trace.wrap(SimulationEngine, "step", lambda _, frame, start, end:
                        trace.samples["paired_step"].append((frame.carla_frame, start, end)))

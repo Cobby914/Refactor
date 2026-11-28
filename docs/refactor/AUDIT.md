@@ -66,3 +66,7 @@ The 600-frame v2 reference run received camera callbacks up to one confirmed fra
 ## Matched capture findings in Step 6
 
 The Windows benchmark reproduced two legacy lifecycle problems on the pinned `98a4744` revision and on the current legacy engine. The passive traffic runner missed recorded CARLA frames, and the campaign returned with its radar and camera actors still present. The v2 campaign verified one traffic update per recorded frame and released all of its actors. Both engines delivered their expected sensor samples in these short runs. The v2 writer queue frequently reached capacity, so steady-state recording throughput remains a rollout condition. [Benchmark results](BENCHMARK.md)
+
+## Full-rate radar output findings in Step 8
+
+At 14 radars and 15,000 rays/s, the original v2 radar CSV stage spent 37.8 ms per frame preparing rows and 30.5 ms serializing and writing them at the median. Reusing scan-level fields and batching writes brought the median radar stage to 14.6 ms. The observed speedup covers one scenario on one host. [Full-rate recording profile](BENCHMARK.md#batched-radar-csv-follow-up)
