@@ -6,6 +6,7 @@ from contextlib import ExitStack
 import csv
 from functools import wraps
 import importlib
+from inspect import signature
 import json
 import os
 from pathlib import Path
@@ -330,7 +331,11 @@ def run_trial(args):
             trace.wrap(ActorMirror, "step", lambda _, result, start, end:
                        trace.samples["mirror"].append((trace.last_tick + 1, start, end)))
         started = perf_counter()
-        result = run_campaign(cfg)
+        # This harness can also be copied into an older revision for comparison.
+        if args.engine == "v2" and "carla_client" in signature(run_campaign).parameters:
+            result = run_campaign(cfg, carla_client=client)
+        else:
+            result = run_campaign(cfg)
         run_end = perf_counter()
 
     actors = world.get_actors()

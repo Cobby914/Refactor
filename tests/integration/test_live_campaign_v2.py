@@ -84,7 +84,8 @@ class LiveCampaignV2Tests(unittest.TestCase):
     def test_two_consecutive_campaigns_keep_one_rig_and_exact_frame_ranges(self):
         directories = []
         for index in range(2):
-            result = run_campaign(self.config(label=index == 0))
+            with patch("carla.Client", side_effect=AssertionError("campaign opened a second CARLA client")):
+                result = run_campaign(self.config(label=index == 0), carla_client=self.client)
             self.assertTrue(result.ok, result.error)
             directory = Path(result.capture_dir)
             directories.append(directory)

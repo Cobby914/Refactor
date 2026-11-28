@@ -113,7 +113,7 @@ def _segment(spec, cfg, row, status, record_steps):
     return segment
 
 
-def run_campaign_v2(cfg, log=None, on_event=None, stop_event=None, *, single=False):
+def run_campaign_v2(cfg, log=None, on_event=None, stop_event=None, *, single=False, carla_client=None):
     result = CampaignResult(rows=[RowOutcome(i) for i in range(len(cfg.runs))])
     log = log if log is not None else []
     stop_event = stop_event if stop_event is not None else Event()
@@ -169,7 +169,7 @@ def run_campaign_v2(cfg, log=None, on_event=None, stop_event=None, *, single=Fal
             stop_check()
             carla = resources.enter_context(open_carla_session(
                 cfg.carla_host, cfg.carla_port, delta, ready_timeout_s=cfg.sync_timeout,
-                rpc_timeout_s=RPC_TIMEOUT_S, stop_check=stop_check,
+                rpc_timeout_s=RPC_TIMEOUT_S, stop_check=stop_check, client=carla_client,
             ))
             _scene_setup(carla.world, cfg, say)
             capture = None

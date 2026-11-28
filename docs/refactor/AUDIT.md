@@ -82,3 +82,9 @@ Short S10 plans exposed a route-template error. Truncating the run to seven seco
 On the test server, changing the fixed delta could leave the first returned tick frame one behind the world snapshot. At 25 and 50 Hz, direct CARLA checks also observed two-frame advances on individual tick calls after the initial setting change. The v2 adapter now confirms two consecutive ticks before establishing the paired clock. The default stays at the verified 20 Hz.
 
 Both legacy CLI launches still left their five rig sensors on Windows. The smoke test cleared those sensors on the isolated server. [Rollout verification](PROGRESS.md#2026-11-27--step-10)
+
+## Endurance finding in Step 11
+
+The S01 full-rate run stopped at the first missing actor snapshot. Walker 52 was present in every saved ground-truth frame through 25773. A traffic-only replay reproduced the disappearance at paired step 4967. The [actor mirror](../../fusion/actor_mirror.py) checks for missing actors against the preceding snapshot before applying the transform batch. This walker's disappearance became visible after the tick, when [capture](../../fusion/capture_session.py) requires every registered mirror to be present in the new snapshot.
+
+Controlled replays isolated CARLA's walker death behavior. The [walker blueprint helper](../../traffic/carla_sync.py) set `is_invincible=false`. The baseline walker first diverged from its commanded position beside stopped car `EB_freeflow.31` at 238.35 s and left the snapshot exactly 10 s later while SUMO still tracked it. That interval matches CARLA's walker death lifespan. In separate controls, changing only this walker's invincibility and moving only this car clear both preserved the walker through 256 s. [CARLA 0.9.16 walker source](https://github.com/carla-simulator/carla/blob/0.9.16/Unreal/CarlaUE4/Plugins/Carla/Source/Carla/Walker/WalkerBase.h#L20-L32) · [Endurance verification](PROGRESS.md#2026-11-27--step-11)

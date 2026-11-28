@@ -70,11 +70,12 @@ def _confirm_start_frame(world, fixed_delta_s, rpc_timeout_s, stop_check):
 
 
 @contextmanager
-def open_carla_session(host, port, fixed_delta_s, *, ready_timeout_s, rpc_timeout_s, stop_check=None):
+def open_carla_session(host, port, fixed_delta_s, *, ready_timeout_s, rpc_timeout_s, stop_check=None, client=None):
     """Connect to an idle Town10HD_Opt world and restore its settings on exit."""
     import carla
 
-    client = carla.Client(host, port)
+    if client is None:
+        client = carla.Client(host, port)
     world = _wait_for_world(client, f"{host}:{port}", ready_timeout_s, rpc_timeout_s, stop_check)
     client.set_timeout(rpc_timeout_s)
     client_version = client.get_client_version()

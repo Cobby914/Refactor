@@ -161,3 +161,20 @@ Legacy remains the default.
 | Unit, integration, and legacy traffic suites | 24 unit tests, 17 integration tests, and 21 legacy traffic tests passed. Live checks included GUI defaults and Stop, six CARLA sessions alternating between 20 and 40 Hz, all four radar layouts, and short S10 route startup. |
 
 The final cleanup check found CARLA asynchronous, all 15 traffic lights unfrozen, no sensor or dynamic actors, and no SUMO workers. The isolated CARLA test server was stopped.
+
+## 2026-11-27 · Step 11
+
+- Started the first of two planned 11-scenario passes with 14 radars at 15,000 rays/s each, 20 Hz, and a 240 s recording window after 20 s of warm-up per scenario.
+- S01 Free Flow stopped at SUMO time 248.35 s. The mirror still expected CARLA actor 52, which was absent from frame 25774. The remaining scenarios were skipped. The partial capture contains 4,566 complete frames over 228.3 s. The manifest, camera index, PNG files, and actor log agree on frames 21208–25773. The radar CSV contains 37,048,983 return rows.
+- A separate traffic-only replay reproduced the disappearance at 248.35 s. SUMO still tracked `ped_stretch_x_east.0` on edge `:532_w2`. CARLA reported its mirror, actor 152 in the replay, as `Invalid` and omitted it from the exact-frame snapshot.
+- After the replay, CARLA was asynchronous with 15 unfrozen traffic lights and no dynamic actors or sensors. No SUMO workers remained. The isolated test server was stopped.
+- Follow-up controls isolated the trigger using the mirror implementation from the failed capture at `b4f37dd`. The vulnerable walker disappeared 10 s after contact with stopped car `EB_freeflow.31`. Making only the target walker invincible, or moving only that car clear, preserved the walker through 256 s. Both controls reached the same commanded walker position at 248.35 s. [Actor lifecycle finding](AUDIT.md#endurance-finding-in-step-11)
+- A temporary invincibility change also passed S01. The project replaced it with [swept actor clearance](ARCHITECTURE.md#scenario-actor-and-signal-synchronization) and restored `is_invincible=false`.
+- The boundary version recorded all 4,800 complete S01 frames at 14 radars and 15,000 rays/s. The target walker yielded, resumed using the same ID, and remained in ground truth past 248.35 s. A separate scan checked all 2,822,737 actor pairs across the saved frames and found zero bounding box overlaps. The full all-scenario endurance pass remains pending.
+- All 26 unit tests and 17 integration tests passed with the boundaries in place. The crossing regression checks that the mirror holds a blocked pedestrian and moves it at a bounded speed once the vehicle clears.
+
+## 2026-11-28 · Step 11 endurance pass
+
+- The first run recorded all 11 scenarios at 20 Hz with 14 radars at 15,000 rays/s. Each row recorded 240 s after 20 s of warm-up. The saved capture contains 52,800 complete frames, 739,200 radar scans, and 428,568,737 radar returns. The persisted CSV row count matched the writer count. Live checks covered 57,200 paired frames including warm-up and 39,315,167 actor pairs with zero observed bounding box overlaps or unexpected mirror losses.
+- The capture closed with CARLA asynchronous, all traffic lights unfrozen, and no dynamic actors. Twenty-four seconds after the campaign record was finalized, the CARLA process crashed during sensor-stream session cleanup. The second pass timed out at its readiness check with zero paired frames. No CARLA or SUMO worker remained from the run.
+- The crash dump matched the bundled CARLA executable and PDB. The top CARLA frames were `MultiStreamState::DisconnectSession` and `Dispatcher::DeregisterSession`. The failing call was `_wassert` with expression `session == _session.load()` at line 120 in the installed build's `MultiStreamState.h`. The upstream release source has the same invariant. [CARLA stream teardown source](https://github.com/carla-simulator/carla/blob/0.9.16/LibCarla/source/carla/streaming/detail/MultiStreamState.h#L88-L98)

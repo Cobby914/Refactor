@@ -335,15 +335,17 @@ def _stop_runner(proc, stop_file: Path, log, label: str) -> None:
 # --------------------------------------------------------------------------
 
 def run_campaign(cfg: CampaignConfig, log: list | None = None, on_event=None,
-                 stop_event: threading.Event | None = None) -> CampaignResult:
+                 stop_event: threading.Event | None = None, *, carla_client=None) -> CampaignResult:
     """Run every row of ``cfg`` into one capture. ``on_event(dict)`` receives
     progress (row status / capture state) for a UI; ``stop_event`` ends the
     campaign early (current row truncated, rest skipped, capture still labels).
+    V2 callers can reuse a client connected to the configured CARLA endpoint.
     """
     if cfg.engine == "v2":
         from .campaign_v2 import run_campaign_v2
 
-        return run_campaign_v2(cfg, log=log, on_event=on_event, stop_event=stop_event)
+        return run_campaign_v2(cfg, log=log, on_event=on_event, stop_event=stop_event,
+                               carla_client=carla_client)
 
     lg = log if log is not None else []
     say = lambda m: _orc._say(lg, m)  # noqa: E731

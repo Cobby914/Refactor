@@ -154,6 +154,7 @@ class LiveTrafficSessionTests(unittest.TestCase):
                 category = "car"
                 if actor.type_id.startswith("walker."):
                     category = "walker"
+                    self.assertEqual(actor.attributes.get("is_invincible"), "false")
                 elif actor.type_id in BIKE_BLUEPRINTS:
                     category = "bicycle"
                 position = actor.get_location()
