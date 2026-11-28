@@ -64,4 +64,4 @@ The writer flushes row output before the coordinator commits the actual inclusiv
 
 The [matched benchmark](BENCHMARK.md) exercised both engines at 4, 8, 12 and 14 radars. V2 confirmed every paired clock step and left the world clean. Parallel PNG encoding reduced queue waits and recording time with the same frame limit. The v2 radar writer now formats one scan at a time and uses one buffered write per scan. It preserves the raw CSV schema, precision and frame order. [Recording profiles](BENCHMARK.md#batched-radar-csv-follow-up)
 
-The 60-second default-budget benchmark completed faster than real time. Keep legacy as the default while validating repeated full-rate multi-row campaigns.
+Two three-row campaigns at the default radar budget recorded 180 simulated seconds each in about 138 wall seconds including setup, warm-up, and teardown. Heavy Demand's p95 tick interval exceeded 50 ms in both trials. Legacy stays the default. [Multi-row benchmark](BENCHMARK.md#repeated-full-rate-campaigns)

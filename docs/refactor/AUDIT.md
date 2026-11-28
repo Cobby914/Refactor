@@ -70,3 +70,7 @@ The Windows benchmark reproduced two legacy lifecycle problems on the pinned `98
 ## Full-rate radar output findings in Step 8
 
 At 14 radars and 15,000 rays/s, the original v2 radar CSV stage spent 37.8 ms per frame preparing rows and 30.5 ms serializing and writing them at the median. Reusing scan-level fields and batching writes brought the median radar stage to 14.6 ms. The observed speedup covers one scenario on one host. [Full-rate recording profile](BENCHMARK.md#batched-radar-csv-follow-up)
+
+## Full-rate campaign findings in Step 9
+
+Two consecutive 14-radar, three-row campaigns recorded all 7,200 expected paired frames across the two runs. Every radar scan matched its sensor and frame in the written CSV. Row boundaries preserved one rig, reset SUMO time, and kept dynamic actors from earlier rows out of later recordings. Total radar return counts differed by 229 across the two runs, with complete sensor coverage in both. Heavy Demand exceeded the 50 ms tick budget at p95 on the test host. [Multi-row benchmark](BENCHMARK.md#repeated-full-rate-campaigns)

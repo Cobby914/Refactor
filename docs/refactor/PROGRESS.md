@@ -138,3 +138,11 @@ V2 remains opt-in. Sustained full-rate recording on the test host still exceeds 
 - All 19 unit tests and 14 live integration tests passed. The live suite compared the two writers on identical measurements for every radar in each of the four layouts. The existing labeling, Doppler/RCS and PointNet pipeline passed on an 80-frame excerpt containing 647,802 full-rate returns. CARLA restored its settings and released the rig. The dedicated test server was stopped.
 
 V2 remains opt-in while repeated full-rate multi-row campaigns are validated.
+
+## 2026-11-27 · Step 9
+
+- Ran two consecutive [full-rate campaigns](BENCHMARK.md#repeated-full-rate-campaigns) on the same CARLA world. Each used 14 radars at 15,000 rays/s and three 60-second recording windows for Free Flow, Heavy Demand, and Stop and Go. Whole-campaign wall time was 137.40 and 137.76 s, including 24 simulated seconds of warm-up in each campaign.
+- Verified all 7,200 paired frames and 100,800 radar scans across the two runs. Frame IDs agreed across the camera index, actor log and segment metadata. Each row reset SUMO time and used a fresh worker. Both campaigns restored CARLA settings and released their actors. Heavy Demand's tick interval p95 was 51.48 and 51.70 ms.
+- All 19 unit tests and 15 integration tests passed. The new [full-rate Stop regression](../../tests/integration/test_live_campaign_v2.py) preserved a completed row and the recorded prefix of the second row, skipped the third, and completed a retry on the same world. The offline pipeline passed on a 60-frame excerpt spanning all three scenarios. The isolated CARLA server was stopped.
+
+Legacy remains the default.

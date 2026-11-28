@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event
 from time import monotonic, sleep
 import unittest
 from unittest.mock import patch
@@ -196,6 +197,31 @@ class LiveCampaignV2Tests(unittest.TestCase):
         retry = run_campaign(cfg)
         self.assertTrue(retry.ok, retry.error)
         self.assert_recorded_segments(Path(retry.capture_dir), [100, 100])
+        self.assert_released(3)
+
+    def test_stop_in_second_full_rate_row_keeps_previous_row_and_allows_retry(self):
+        cfg = self.config(radars_south=7, radars_north=7, radar_points_per_second=15000)
+        cfg.runs.append(RunSpec(scenario=4, duration=5, seed=56))
+        stop = Event()
+
+        def stop_in_second_row(event):
+            if event.get("index") == 1 and event.get("status") == "recording" and event.get("detail") == "25%":
+                stop.set()
+
+        result = run_campaign(cfg, on_event=stop_in_second_row, stop_event=stop)
+        self.assertTrue(result.stopped, result.error)
+        self.assertFalse(result.ok)
+        self.assertEqual([row.status for row in result.rows], ["done", "stopped", "skipped"])
+        directory = Path(result.capture_dir)
+        segments, _ = self.assert_recorded_segments(directory, [100, 25])
+        self.assertEqual([row["status"] for row in segments], ["complete", "truncated"])
+        self.assertEqual(self.read_json(directory / "run_meta.json")["capture_status"], "interrupted")
+        self.assert_released(2)
+
+        cfg.runs = cfg.runs[:1]
+        retry = run_campaign(cfg)
+        self.assertTrue(retry.ok, retry.error)
+        self.assert_recorded_segments(Path(retry.capture_dir), [100])
         self.assert_released(3)
 
     def assert_stopped(self, directory, *, limit):

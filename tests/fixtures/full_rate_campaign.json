@@ -1,0 +1,17 @@
+{
+  "name": "full_rate_validation",
+  "engine": "v2",
+  "radar_count": 14,
+  "radar_points_per_second": 15000,
+  "rate_hz": 20.0,
+  "warmup_s": 8.0,
+  "scene_cleanup": false,
+  "clear_trees": false,
+  "label": false,
+  "postprocess": false,
+  "runs": [
+    {"scenario": 1, "density": 60, "duration": 60, "direction": "BOTH", "ambient_vehicles": 30, "pedestrians": 12, "bicycles": 8, "seed": 42},
+    {"scenario": 3, "density": 60, "duration": 60, "direction": "BOTH", "ambient_vehicles": 30, "pedestrians": 12, "bicycles": 8, "seed": 43},
+    {"scenario": 4, "density": 70, "duration": 60, "direction": "BOTH", "ambient_vehicles": 30, "pedestrians": 20, "bicycles": 10, "seed": 44}
+  ]
+}

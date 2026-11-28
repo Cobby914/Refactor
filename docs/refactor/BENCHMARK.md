@@ -148,3 +148,33 @@ The CSV headers, radar scan counts, and frame order matched across the two captu
 An 80-frame excerpt from the optimized full-rate capture contained 647,802 returns. The labeler found 8,300 matches and reported zero missing actor frames. Doppler/RCS processing completed and PointNet built all 80 frames with their expected scenario and segment IDs.
 
 To reproduce, use the same full-rate command as above with `DATASET_CAMERA_ENCODER_THREADS=2`. Copy the current benchmark harness into an export of `8c830ba` for the per-return baseline. Use fresh output paths.
+
+## Repeated full-rate campaigns
+
+The November 27 trials used the same dedicated offscreen CARLA 0.9.16 and SUMO 1.28.0 setup. The [validation plan](../../tests/fixtures/full_rate_campaign.json) defines three rows in order, S01 Free Flow, S03 Heavy Demand, and S04 Stop and Go. The rows use seeds 42, 43, and 44 respectively. Each row runs 8 s of warm-up and records 60 s at 20 Hz. All three rows share one 14-radar rig at 15,000 rays/s per radar and one RGB camera. Both trials used two PNG workers and reused the same CARLA world.
+
+Recording wall time is the sum of the three recording windows. Whole-campaign time includes setup, warm-up, row transitions, and teardown. Tick interval percentiles use consecutive ticks inside each recording window. Dataset processing runs separately.
+
+| Recording window | Simulated seconds | Run 1 wall seconds | Run 2 wall seconds | Tick p95, run 1 / run 2 |
+| --- | ---: | ---: | ---: | ---: |
+| S01 Free Flow | 60 | 38.87 | 39.47 | 47.51 / 47.95 ms |
+| S03 Heavy Demand | 60 | 45.31 | 44.70 | 51.48 / 51.70 ms |
+| S04 Stop and Go | 60 | 41.32 | 41.70 | 48.83 / 50.74 ms |
+| All recording windows | 180 | 125.50 | 125.86 | 49.24 / 49.81 ms |
+| Whole campaign | 204 paired seconds with warm-up | 137.40 | 137.76 | |
+
+Both campaigns recorded 3,600 complete paired frames, 3,600 camera images and 50,400 radar scans. The two runs wrote 29,163,671 and 29,163,442 radar returns. The counts differed by 229 across the independent runs with the same seeds. The eight-frame writer queue reached capacity at 26 and 45 of 3,600 sampled recording ticks. All six recording windows averaged faster than real time. Heavy Demand exceeded the 50 ms tick budget at p95 in both runs, and Stop and Go exceeded it in the second run.
+
+Every radar CSV scan matched its recorded frame, sensor ID, and return count. The camera index, actor log, frame manifest, and `segments.json` agreed on the exact recording ranges. Each row reset SUMO time, used a fresh SUMO process, and recorded a distinct set of dynamic actor IDs. Each campaign used a single rig and restored CARLA's settings and signal timing on exit.
+
+The 60-frame excerpt included 20 frames from each scenario and 484,801 radar returns. Labeling reported zero missing actor frames and 10,784 matches. Doppler/RCS processing completed, and PointNet built all 60 frames with the expected scenario and segment IDs. The full-rate Stop regression retained 100 frames from the completed row and 25 from the interrupted second row, skipped the third row, and immediately completed another full-rate capture on the same world.
+
+These results cover one workstation and three scenarios. Legacy remains the default.
+
+To reproduce, run the two commands in sequence on the same dedicated asynchronous CARLA endpoint. Use new output directories. The harness loads the plan and writes aggregate and per-row timings in `result.json`.
+
+```powershell
+$env:DATASET_CAMERA_ENCODER_THREADS = '2'
+python -B tests/benchmark_capture.py --engine v2 --port 22000 --campaign tests/fixtures/full_rate_campaign.json --output "$env:TEMP/scalesense-full-rate-1"
+python -B tests/benchmark_capture.py --engine v2 --port 22000 --campaign tests/fixtures/full_rate_campaign.json --output "$env:TEMP/scalesense-full-rate-2"
+```

@@ -176,10 +176,13 @@ def latency(samples):
 
 
 def summarize(directory, trace, run_end):
-    segment, = read_json(directory / "segments.json")["segments"]
-    frames = set(range(segment["start_frame"], segment["end_frame"] + 1))
+    segments = read_json(directory / "segments.json")["segments"]
+    windows = [set(range(row["start_frame"], row["end_frame"] + 1)) for row in segments]
+    frames = set().union(*windows)
     ticks = [event for event in trace["tick"] if event[0] in frames]
+    tick_by_frame = {event[0]: event for event in ticks}
     mirrors = [event for event in trace["mirror"] if event[0] in frames]
+    mirror_frames = {event[0] for event in mirrors}
     radar = defaultdict(set)
     zero_scans = 0
     for label, frame, returns in trace["radar_written"]:
@@ -203,11 +206,26 @@ def summarize(directory, trace, run_end):
     with (directory / "radar_data.csv").open(encoding="utf-8", newline="") as file:
         radar_header = next(csv.reader(file))
         points = sum(1 for _ in file)
+
+    rows = []
+    periods = []
+    for segment, window in zip(segments, windows):
+        window_ticks = [tick_by_frame[frame] for frame in sorted(window) if frame in tick_by_frame]
+        window_periods = [(frame, prev[1], start) for prev, (frame, start, _) in zip(window_ticks, window_ticks[1:])]
+        periods.extend(window_periods)
+        rows.append({
+            "segment_id": segment["segment_id"], "scenario": segment["scenario"],
+            "window_frames": len(window), "recording_s": window_ticks[-1][2] - window_ticks[0][1],
+            "tick_period": latency(window_periods), "mirror_updates": len(mirror_frames & window),
+            "camera_frames": len(camera.keys() & window), "actor_frames": len(truth & window),
+            "radar_scans": {label: len(values & window) for label, values in radar.items()},
+        })
     summary = {
-        "window_frames": len(frames), "recording_s": ticks[-1][2] - ticks[0][1],
+        "window_frames": len(frames), "recording_s": sum(row["recording_s"] for row in rows),
+        "segments": rows,
         "shutdown_s": run_end - ticks[-1][2], "carla_tick": latency(ticks),
-        "actor_mirror": latency(mirrors), "mirror_updates_in_window": len({event[0] for event in mirrors}),
-        "tick_period": latency([(frame, prev[1], start) for prev, (frame, start, _) in zip(ticks, ticks[1:])]),
+        "actor_mirror": latency(mirrors), "mirror_updates_in_window": len(mirror_frames),
+        "tick_period": latency(periods),
         "camera_frames": len(camera.keys() & frames), "camera_rows": sum(camera.values()),
         "camera_header": camera_header,
         "actor_frames": len(truth & frames), "radar_scans": {label: len(values & frames) for label, values in radar.items()},
@@ -238,10 +256,34 @@ def summarize(directory, trace, run_end):
     return summary
 
 
+def benchmark_config(args, directory):
+    from fusion.campaign import CampaignConfig, RunSpec
+
+    if args.campaign is not None:
+        cfg = CampaignConfig.load(args.campaign)
+    else:
+        cfg = CampaignConfig(
+            name=f"benchmark_{args.engine}_{args.radars}",
+            runs=[RunSpec(scenario=1, density=60, duration=args.duration, seed=42,
+                          ambient_vehicles=30, pedestrians=12, bicycles=8)],
+            warmup_s=args.warmup, radars_south=args.radars // 2, radars_north=args.radars // 2,
+            radar_points_per_second=args.radar_pps, rate_hz=20,
+            scene_cleanup=False, clear_trees=False, sync_timeout=15, runner_start_timeout_s=30,
+        )
+    if hasattr(cfg, "engine"):
+        cfg.engine = args.engine
+    elif args.engine != "legacy":
+        raise RuntimeError("this revision only supports the legacy engine")
+    cfg.label = cfg.postprocess = False
+    cfg.carla_host, cfg.carla_port = args.host, args.port
+    cfg.capture_base_dir = str(directory)
+    return cfg
+
+
 def run_trial(args):
     import carla
     from fusion import orchestrator
-    from fusion.campaign import CampaignConfig, RunSpec, run_campaign
+    from fusion.campaign import run_campaign
     from traffic import sumo_env
 
     directory = args.output.resolve()
@@ -256,19 +298,7 @@ def run_trial(args):
     if any(actor.type_id.startswith(("vehicle.", "walker.", "sensor.")) for actor in baseline):
         raise RuntimeError("benchmark needs a dedicated world without existing actors or sensors")
     baseline_ids = {actor.id for actor in baseline}
-    engine = {"engine": args.engine} if "engine" in CampaignConfig.__dataclass_fields__ else {}
-    if not engine and args.engine != "legacy":
-        raise RuntimeError("this revision only supports the legacy engine")
-    cfg = CampaignConfig(
-        name=f"benchmark_{args.engine}_{args.radars}",
-        runs=[RunSpec(scenario=1, density=60, duration=args.duration, seed=42,
-                      ambient_vehicles=30, pedestrians=12, bicycles=8)],
-        warmup_s=args.warmup, radars_south=args.radars // 2, radars_north=args.radars // 2,
-        radar_points_per_second=args.radar_pps, rate_hz=20, label=False, postprocess=False,
-        scene_cleanup=False, clear_trees=False, carla_host=args.host, carla_port=args.port,
-        capture_base_dir=str(directory), sync_timeout=15, runner_start_timeout_s=30,
-        **engine,
-    )
+    cfg = benchmark_config(args, directory)
     with ExitStack() as stack:
         trace = Trace(stack)
         if args.engine == "legacy":
@@ -346,13 +376,15 @@ def main():
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", required=True, choices=("legacy", "v2"))
-    parser.add_argument("--radars", required=True, type=int, choices=(4, 8, 12, 14))
+    preset = parser.add_mutually_exclusive_group(required=True)
+    preset.add_argument("--radars", type=int, choices=(4, 8, 12, 14), help="use the single-row S01 benchmark")
+    preset.add_argument("--campaign", type=Path, help="use settings from a campaign JSON")
     parser.add_argument("--output", required=True, type=Path, help="new directory for the capture and timing traces")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", required=True, type=int, help="dedicated asynchronous CARLA endpoint")
-    parser.add_argument("--duration", type=int, default=22)
-    parser.add_argument("--warmup", type=float, default=8)
-    parser.add_argument("--radar-pps", type=int, default=1200)
+    parser.add_argument("--duration", type=int, default=22, help="recorded seconds for the single-row preset")
+    parser.add_argument("--warmup", type=float, default=8, help="warm-up seconds for the single-row preset")
+    parser.add_argument("--radar-pps", type=int, default=1200, help="rays per second for the single-row preset")
     return run_trial(parser.parse_args())
 
 
