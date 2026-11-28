@@ -1,7 +1,7 @@
 """Own a v2 roadside rig and record only verified paired simulator frames."""
 
 from collections import Counter
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic, sleep
@@ -33,6 +33,9 @@ WARMUP_TICKS = 3
 TAIL_TICKS = 6
 MAX_LAG_FRAMES = 8
 ROLE_PREFIX = "scalesense-v2-sensor:"
+# CARLA 0.9.16 can assert in MultiStreamState::DisconnectSession when DestroyActor
+# races in-flight TCP stream teardown. Upstream examples drain after sensor.stop().
+SENSOR_STREAM_DRAIN_S = 0.4
 
 
 @dataclass(frozen=True)
@@ -78,6 +81,7 @@ def open_sensor_rig(session, options: CaptureOptions):
 
     ids = {}
     spawn_uncertain = True
+    sensors = {}
     try:
         responses = session.client.apply_batch_sync([cmd for _, cmd in definitions], False)
         errors = []
@@ -90,15 +94,18 @@ def open_sensor_rig(session, options: CaptureOptions):
         if spawn_uncertain or errors:
             raise RuntimeError("incomplete CARLA sensor rig: " + ", ".join(errors or ["missing batch replies"]))
 
-        with ExitStack() as listeners:
-            sensors = {}
-            for label, actor_id in ids.items():
-                sensor = world.get_actor(actor_id)
-                if sensor is None:
-                    raise RuntimeError(f"CARLA did not expose spawned sensor {label}")
-                sensors[label] = sensor
-                listeners.callback(stop_sensor, sensor)
+        for label, actor_id in ids.items():
+            sensor = world.get_actor(actor_id)
+            if sensor is None:
+                raise RuntimeError(f"CARLA did not expose spawned sensor {label}")
+            sensors[label] = sensor
+        try:
             yield sensors
+        finally:
+            for sensor in sensors.values():
+                stop_sensor(sensor)
+            if sensors:
+                sleep(SENSOR_STREAM_DRAIN_S)
     finally:
         owned = set(ids.values())
         try:
@@ -118,8 +125,11 @@ def open_sensor_rig(session, options: CaptureOptions):
 
 
 def stop_sensor(sensor):
-    if sensor.is_listening:
-        sensor.stop()
+    try:
+        if sensor.is_listening:
+            sensor.stop()
+    except RuntimeError:
+        pass
 
 
 class CaptureSession:
