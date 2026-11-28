@@ -37,8 +37,11 @@ class Trace:
         self.backlogs = {}
 
     def wrap(self, owner, name, observe):
-        original = getattr(owner, name)
+        measured = self.measure(getattr(owner, name), observe)
+        self.stack.enter_context(patch.object(owner, name, measured))
 
+    @staticmethod
+    def measure(original, observe):
         @wraps(original)
         def call(*args, **kwargs):
             start = perf_counter()
@@ -47,7 +50,7 @@ class Trace:
             observe(args, result, start, end)
             return result
 
-        self.stack.enter_context(patch.object(owner, name, call))
+        return call
 
     def capture(self, carla, capture, *, legacy):
         def tick(_args, frame, start, end):
@@ -72,8 +75,24 @@ class Trace:
 
         self.stack.enter_context(patch.object(carla.Sensor, "listen", observe_callbacks))
         self.wrap(carla.World, "tick", tick)
-        self.wrap(capture, "process_radar_measurement_fast", lambda args, *_:
-                  self.samples["radar_written"].append((args[2], args[0].frame, len(args[0]))))
+        def radar_written(args, _, start, end):
+            measurement, _, label, _ = args
+            self.samples["radar_written"].append((label, measurement.frame, len(measurement)))
+            self.samples["radar_csv"].append((measurement.frame, start, end))
+
+        self.wrap(capture, "process_radar_measurement_fast", radar_written)
+        if not legacy:
+            self.wrap(capture, "_encode_carla_image_png", lambda args, _, start, end:
+                      self.samples["png_encode"].append((args[0].frame, start, end)))
+            self.wrap(capture, "camera_metadata_row", lambda args, _, start, end:
+                      self.samples["camera_metadata"].append((args[0].frame, start, end)))
+            snapshot_factory = capture.make_fast_tick_snapshot_fn
+
+            def timed_snapshot_factory(*args, **kwargs):
+                return self.measure(snapshot_factory(*args, **kwargs), lambda args, _, start, end:
+                                    self.samples["ground_truth"].append((args[1].frame, start, end)))
+
+            self.stack.enter_context(patch.object(capture, "make_fast_tick_snapshot_fn", timed_snapshot_factory))
         if legacy:
             from capture.radar_stream import PerRadarDequeBuffer
 
@@ -158,6 +177,13 @@ def summarize(directory, trace, run_end):
         summary["paired_step"] = latency([event for event in trace["paired_step"] if event[0] in frames])
         with manifest.open(encoding="utf-8") as file:
             summary["sumo_recording_end_s"] = json.loads(list(file)[-1])["sumo_time_s"]
+        summary["recording_stages"] = {}
+        for stage in ("ground_truth", "writer_submit", "png_encode", "camera_metadata", "radar_csv"):
+            by_frame = defaultdict(float)
+            for frame, start, end in trace[stage]:
+                if frame in frames:
+                    by_frame[frame] += end - start
+            summary["recording_stages"][stage] = latency([(frame, 0, seconds) for frame, seconds in by_frame.items()])
     return summary
 
 
@@ -187,7 +213,7 @@ def run_trial(args):
         runs=[RunSpec(scenario=1, density=60, duration=args.duration, seed=42,
                       ambient_vehicles=30, pedestrians=12, bicycles=8)],
         warmup_s=args.warmup, radars_south=args.radars // 2, radars_north=args.radars // 2,
-        radar_points_per_second=1200, rate_hz=20, label=False, postprocess=False,
+        radar_points_per_second=args.radar_pps, rate_hz=20, label=False, postprocess=False,
         scene_cleanup=False, clear_trees=False, carla_host=args.host, carla_port=args.port,
         capture_base_dir=str(directory), sync_timeout=15, runner_start_timeout_s=30,
         **engine,
@@ -214,6 +240,8 @@ def run_trial(args):
             trace.capture(carla, legacy, legacy=False)
             trace.wrap(CaptureWriter, "__init__", lambda args, *_:
                        trace.backlogs.update(joined_frame_queue=args[0]._queue.qsize))
+            trace.wrap(CaptureWriter, "submit", lambda args, _, start, end:
+                       trace.samples["writer_submit"].append((args[1].simulation.carla_frame, start, end)))
             trace.wrap(SimulationEngine, "step", lambda _, frame, start, end:
                        trace.samples["paired_step"].append((frame.carla_frame, start, end)))
             trace.wrap(ActorMirror, "step", lambda _, result, start, end:
@@ -271,6 +299,7 @@ def main():
     parser.add_argument("--port", required=True, type=int, help="dedicated asynchronous CARLA endpoint")
     parser.add_argument("--duration", type=int, default=22)
     parser.add_argument("--warmup", type=float, default=8)
+    parser.add_argument("--radar-pps", type=int, default=1200)
     return run_trial(parser.parse_args())
 
 

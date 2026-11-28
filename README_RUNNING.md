@@ -115,6 +115,8 @@ The output includes the existing radar and camera CSVs, camera PNGs, actor geome
 
 The [capture benchmark](docs/refactor/BENCHMARK.md) compares sensor coverage, traffic synchronization and recording time for the legacy and v2 engines.
 
+V2 uses two camera PNG encoders by default. Set `DATASET_CAMERA_ENCODER_THREADS` to choose 1–8 workers. The writers share the same frame limit at every worker count.
+
 For an exact step count and a specific new capture directory, use the lower-level command.
 
 ```bash

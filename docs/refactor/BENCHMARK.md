@@ -93,3 +93,31 @@ python -B pointnet/build_frames.py $capture
 ```
 
 To reproduce the pinned controls, export `98a4744` with `git archive` into a separate temporary directory. Copy `tests/benchmark_capture.py` into its `tests` directory and run the legacy command from the exported source with the same venv and endpoint.
+
+## Parallel PNG follow-up
+
+The November 27 follow-up compared v2 from `99424aa` with the parallel PNG writer on the same host, seed, and S01 setup. Each comparison used one run per version. The default-budget trial used 14 radars at 15,000 rays/s and a 60-second recording window. Both versions used the same benchmark instrumentation.
+
+| Radars | Rays/s per radar | Simulation seconds | Serial writer (wall s) | Two PNG encoders (wall s) | Wall time reduction |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 1,200 | 22 | 14.67 | 10.31 | 29.7% |
+| 8 | 1,200 | 22 | 14.40 | 10.95 | 24.0% |
+| 12 | 1,200 | 22 | 15.00 | 11.22 | 25.1% |
+| 14 | 1,200 | 22 | 15.75 | 11.66 | 26.0% |
+| 14 | 15,000 | 60 | 121.90 | 107.89 | 11.5% |
+
+At 1,200 rays/s, the serial writer spent about 29 ms per PNG at the median. Ground-truth lookup took 0.18–0.19 ms and radar CSV writing took 1.61–5.62 ms per frame. Across all five comparisons, frame submission p95 fell from 28.91–33.19 ms to 0.07–0.08 ms. Full writer queue samples fell from 70.0–97.2% to 0.2–1.1%. The queue retained its capacity of eight waiting frames plus the active frame.
+
+At 15,000 rays/s, radar CSV writing took 67.1 ms per frame at the median in the serial baseline and 71.8 ms with two PNG workers. The parallel run also showed longer individual encode times. Paired-step p95 increased from 97.3 to 153.6 ms at that load. The 1,200 rays/s paired-step p95 stayed near 31 ms.
+
+One further default-budget trial used a single PNG worker alongside the ordered writer. It recorded 60 simulated seconds in 105.49 wall seconds, with a paired-step p95 of 125.4 ms and the same complete frame and radar counts. The result covers one trial at each worker count. The encoder default remains two.
+
+Every comparison retained the same number of radar return rows and saved every expected frame. The default-budget captures each contained 1,200 paired frames, 16,800 radar scans, and 9,708,118 radar returns. The four tuned 1,200 rays/s captures passed labeling, Doppler/RCS postprocessing and PointNet frame building. The simulator settings and actor cleanup checks passed for all five pairs.
+
+Reproduce the default-budget trial with the same benchmark harness. Copy the current harness into an export of `99424aa` to measure the serial version. Use a fresh path for each run.
+
+```powershell
+python -B tests/benchmark_capture.py --port 22000 --engine v2 --radars 14 --radar-pps 15000 --duration 60 --output "$env:TEMP/scalesense-v2-dense"
+```
+
+Set `DATASET_CAMERA_ENCODER_THREADS=1` in the environment to reproduce the one-worker trial.

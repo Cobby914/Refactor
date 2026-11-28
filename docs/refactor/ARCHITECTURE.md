@@ -50,7 +50,7 @@ The coordinator confirms ground truth from the same `WorldSnapshot` as each succ
 
 At normal completion, the coordinator closes the recording window, advances up to six CARLA-only ticks to release outstanding GPU images and gives callbacks a final half-second to arrive. These maintenance frames are excluded from the dataset and leave SUMO time unchanged. Interruption flushes the confirmed frames as available. The frame manifest records missing sensors and distinguishes frames that expired during recording from unfinished frames at shutdown. [CARLA 0.9.16 GPU sensor delivery](https://carla.readthedocs.io/en/0.9.16/adv_synchrony_timestep/#using-synchronous-mode)
 
-The [writer](../../fusion/capture_writer.py) uses an eight-frame queue and runs PNG encoding and serialization off the coordinator thread. Storage backpressure can slow the coordinator in wall time. Worker failures surface to the caller. The writer reuses the legacy CSV columns, radar return rows, camera metadata, PNG encoding and actor geometry serialization. The only new output is the frame manifest. Optional offline labeling and postprocessing run after simulator cleanup in fresh processes.
+The [writer](../../fusion/capture_writer.py) queues up to eight frames plus the active frame. This limit covers pending PNG jobs as well as the ordered writer. Camera workers use the existing encoder and stage images in a temporary directory inside the capture. The writer waits for each frame's PNG, moves it to the final image path, and writes the legacy CSVs, actor log, and frame manifest in frame order. A flush waits for the earlier frame commits. Encoder errors surface to the coordinator and the writer removes the remaining staged images. Optional offline labeling and postprocessing run after simulator cleanup in fresh processes.
 
 ## CLI and campaign lifecycle
 
@@ -62,6 +62,6 @@ The writer flushes row output before the coordinator commits the actual inclusiv
 
 ## Performance and rollout
 
-The [matched benchmark](BENCHMARK.md) exercised both engines at 4, 8, 12 and 14 radars. V2 confirmed every paired clock step and left the world clean. Its recording rate was lower, and most post-tick writer queue samples were at capacity. Profile ground-truth collection, writer submission and image encoding before increasing queue capacity or changing worker concurrency. Preserve exact-frame joins, the bounded queue and the existing dataset contract when tuning.
+The [matched benchmark](BENCHMARK.md) exercised both engines at 4, 8, 12 and 14 radars. V2 confirmed every paired clock step and left the world clean. The serial PNG writer frequently filled its queue. Parallel encoding reduced queue waits and recording time with the same frame limit. At the default radar budget, serialized radar CSV work and the overlap between encoding and the coordinator still limit throughput. [Recording profile](BENCHMARK.md#parallel-png-follow-up)
 
 Keep legacy as the default until throughput is verified at the default radar ray budget and through longer campaigns.

@@ -122,3 +122,11 @@ Record paired legacy and v2 runs with the same scenarios, seeds and sensor confi
 - All 20 captures passed the existing labeler, Doppler/RCS processing and PointNet frame building. The labeler reported zero missing actor frames. The 16 v2 unit tests and 21 legacy traffic tests passed. The isolated CARLA server was stopped after verifying an empty rig and restored settings.
 
 Keep v2 opt-in while profiling the recording path and validating sustained throughput at the default ray budget.
+
+## 2026-11-27 · Step 7
+
+- Profiled ground-truth collection, PNG encoding, radar CSV writing and writer submission. PNG encoding was the largest writer stage at 1,200 rays/s. The v2 writer now uses two camera encoders by default, with the same bound of eight queued frames plus the active frame. The ordered writer publishes each PNG and its metadata after encoding succeeds.
+- In five [matched before-and-after trials](BENCHMARK.md#parallel-png-follow-up), v2 recording wall time fell by 24.0–29.7% at 1,200 rays/s. The 14-radar, 15,000 rays/s run fell from 121.90 to 107.89 wall seconds for 60 simulated seconds. A one-encoder trial at that load took 105.49 s and reduced paired-step p95 from 153.6 to 125.4 ms compared with two workers.
+- All trials kept the expected paired frames, matching radar return counts and camera/actor coverage. The four tuned 1,200 rays/s captures passed labeling, Doppler/RCS processing and PointNet frame building. All 17 unit tests and 14 live integration tests passed, including ordered commits after out-of-order encoding, writer failure cleanup, the bounded frame queue, GUI Stop, and recovery from an injected clock timeout.
+
+V2 remains opt-in. Sustained full-rate recording on the test host still exceeds real time.
