@@ -37,6 +37,7 @@ import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from math import isfinite
 from pathlib import Path
 
 from .config import (
@@ -152,9 +153,23 @@ class CampaignConfig:
             errs.append(f"rate_hz must be 1-200 (got {self.rate_hz})")
         elif self.engine == "v2":
             errs.extend(v2_period_errors(self.fixed_delta_s))
-        if self.warmup_s < 0:
+        if self.engine == "v2":
+            errs.extend(self.v2_runtime_errors())
+        elif self.warmup_s < 0:
             errs.append("warm-up must be >= 0 s")
         return errs
+
+    def v2_runtime_errors(self) -> list[str]:
+        errors = []
+        if not 1 <= self.carla_port <= 65535:
+            errors.append("CARLA port must be between 1 and 65535")
+        if not isfinite(self.warmup_s) or self.warmup_s < 0:
+            errors.append("warm-up must be finite and nonnegative")
+        for name in ("sync_timeout", "runner_start_timeout_s"):
+            value = getattr(self, name)
+            if not isfinite(value) or value <= 0:
+                errors.append(f"{name} must be finite and positive")
+        return errors
 
     def fusion_config(self) -> FusionConfig:
         """Adapter so the single-run stage helpers can be reused."""

@@ -71,6 +71,33 @@ class EngineSelectionTests(unittest.TestCase):
         self.assertEqual(exit.exception.code, 2)
         self.assertIn("Use --engine legacy", self.stderr.getvalue())
 
+    def test_migration_preserves_the_source_and_unknown_fields_without_running(self):
+        with TemporaryDirectory() as tmp, patch.object(run_fusion, "run_campaign") as run:
+            source = Path(tmp) / "old.json"
+            destination = Path(tmp) / "v2.json"
+            old = {"runs": [{"scenario": 3, "note": "keep this"}], "radar_count": 14, "extra": "keep"}
+            source.write_text(json.dumps(old), encoding="utf-8")
+            self.assertEqual(self.invoke_cli("--campaign", str(source), "--migrate-to-v2", str(destination)), 0)
+            self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), {**old, "engine": "v2"})
+            self.assertEqual(json.loads(source.read_text(encoding="utf-8")), old)
+            with self.assertRaises(SystemExit):
+                self.invoke_cli("--campaign", str(source), "--migrate-to-v2", str(source))
+            self.assertEqual(json.loads(source.read_text(encoding="utf-8")), old)
+            run.assert_not_called()
+
+    def test_migration_requires_an_explicit_change_to_an_incompatible_period(self):
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / "old.json"
+            destination = Path(tmp) / "v2.json"
+            source.write_text(json.dumps({"engine": "legacy", "runs": [{}], "rate_hz": 30}), encoding="utf-8")
+            args = ("--campaign", str(source), "--migrate-to-v2", str(destination))
+            with self.assertRaises(SystemExit):
+                self.invoke_cli(*args)
+            self.assertIn("tick period in whole milliseconds", self.stderr.getvalue())
+            self.assertFalse(destination.exists())
+            self.assertEqual(self.invoke_cli(*args, "--rate-hz", "40"), 0)
+            self.assertEqual(CampaignConfig.load(destination).rate_hz, 40)
+
     def test_v2_rejects_fractional_millisecond_steps_before_opening_carla(self):
         with TemporaryDirectory() as tmp, patch("fusion.campaign_v2.open_carla_session") as open_carla:
             path = Path(tmp) / "campaign.json"

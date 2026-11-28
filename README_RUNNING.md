@@ -107,7 +107,7 @@ post-processing run automatically (`--no-label`, `--no-postprocess` to skip).
 
 Standard 20 Hz single runs use v2 by default. Start a dedicated asynchronous CARLA server on `Town10HD_Opt` with rendering enabled. Use `--carla-port` to select a separate server.
 
-Use `--engine legacy` to reproduce a legacy single run. Single-run commands with a custom `--rate-hz` or `--tm-port` select legacy when the engine is omitted. To try a custom v2 rate, pass `--engine v2` and use a whole-millisecond tick period. V2 verifies consecutive CARLA ticks at that interval before starting a capture.
+Use `--engine legacy` to reproduce a legacy single run. Single-run commands with a custom `--rate-hz` or `--tm-port` select legacy when the engine is omitted. To migrate a custom command, add `--engine v2` and remove `--tm-port`. V2 mirrors traffic directly from SUMO. The rate must have a whole-millisecond tick period. V2 verifies consecutive CARLA ticks at the requested interval before starting a capture. The bundled server passed at 20 and 40 Hz. If a rate fails the startup check, choose a verified rate or keep that command on legacy until the required rate is supported.
 
 ```bash
 python run_fusion.py --engine legacy --scenario 3 --density 60 --duration 300 --radars 8 --rate-hz 20
@@ -135,7 +135,13 @@ python run_fusion.py --campaign campaigns/example_campaign.json
 python run_fusion.py --engine v2 --campaign campaigns/example_campaign.json
 ```
 
-New campaigns in `fusion_gui.py` start with **v2** selected. The GUI and CLI both honor the engine in a saved or autosaved plan, and plans without an `engine` field use legacy. To run an older plan with v2, select **v2** before starting it in the GUI or pass `--engine v2` on the CLI. To save the choice for future runs, save the plan with `"engine": "v2"`.
+New campaigns in `fusion_gui.py` start with **v2** selected. The GUI and CLI both honor the engine in a saved or autosaved plan, and plans without an `engine` field use legacy. To run an older plan with v2, select **v2** before starting it in the GUI or pass `--engine v2` on the CLI. To prepare and validate a separate v2 copy without starting the simulators, run the following command with a new output filename.
+
+```bash
+python run_fusion.py --campaign campaigns/example_campaign.json --migrate-to-v2 my_campaign_v2.json
+```
+
+The converter preserves the source plan and its settings, sets the copy's engine to v2, and validates it before writing. Pass `--rate-hz 20` or `--rate-hz 40` if you intend to change the saved rate. `traffic_manager_port`, `sensor_settle_s`, and `cleanup_verify_s` are legacy settings. Review any custom values for those fields before switching the campaign. Load the new file in the GUI or run it with `--campaign my_campaign_v2.json` to verify the requested clock on your CARLA server.
 
 V2 uses one capture directory and sensor rig across the campaign, and a fresh SUMO session for each row. Warm-up advances both simulators before recording starts. `segments.json` lists the inclusive CARLA frame range actually saved for each row. `campaign.json` reports completed, interrupted and skipped rows. The offline labeler uses `segments.json` to fill `segment_id` and `scenario_id` in `radar_data_labeled.csv`.
 

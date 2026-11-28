@@ -17,6 +17,8 @@ Prereqs: CarlaUE4 running on Town10HD_Opt, SUMO_HOME set, venv active
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 import sys
 
 from fusion.config import DEFAULT_ENGINE, DEFAULT_RATE_HZ, FusionConfig, MAX_RADARS_PER_SIDE, split_radar_count
@@ -31,6 +33,25 @@ def _bool_flag(parser, name, default, help_on, help_off):
     grp.add_argument(f"--{name}", dest=dest, action="store_true", help=help_on)
     grp.add_argument(f"--no-{name}", dest=dest, action="store_false", help=help_off)
     parser.set_defaults(**{dest: default})
+
+
+def _migrate_campaign(source, destination, overrides):
+    data = json.loads(Path(source).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("a campaign must contain a JSON object")
+    rows = data.get("runs", [])
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("campaign runs must be a list of JSON objects")
+    data.update(overrides)
+    data["engine"] = "v2"
+    cfg = CampaignConfig.from_dict(data)
+    errors = cfg.validate()
+    if errors:
+        raise ValueError(", ".join(errors))
+    contents = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    with Path(destination).open("x", encoding="utf-8") as output:
+        output.write(contents)
+    print(f"Saved v2 campaign to {destination}")
 
 
 def main() -> int:
@@ -73,8 +94,8 @@ def main() -> int:
                "run post-processing after capture", "skip post-processing")
     p.add_argument("--capture-base-dir", help="override output root")
     # shared clock / carla
-    p.add_argument("--rate-hz", type=float, default=DEFAULT_RATE_HZ,
-                   help="shared tick rate (select --engine v2 explicitly for custom v2 rates)")
+    p.add_argument("--rate-hz", type=float,
+                   help="shared tick rate for a single run or campaign migration (single-run default: 20 Hz)")
     p.add_argument("--carla-host")
     p.add_argument("--carla-port", type=int)
     p.add_argument("--tm-port", type=int,
@@ -90,19 +111,36 @@ def main() -> int:
     p.add_argument("--campaign", default="",
                    help="run a saved campaign JSON; --engine, --carla-host, --carla-port, "
                         "--radar-pps and --capture-base-dir can override its settings")
+    p.add_argument("--migrate-to-v2", metavar="OUTPUT",
+                   help="validate and save --campaign as a new v2 plan without running it")
     args = p.parse_args()
+
+    campaign_overrides = {
+        name: value for name, value in (
+            ("engine", args.engine), ("carla_host", args.carla_host), ("carla_port", args.carla_port),
+            ("radar_points_per_second", args.radar_pps), ("capture_base_dir", args.capture_base_dir),
+        ) if value is not None
+    }
+    if args.migrate_to_v2 is not None:
+        if not args.campaign:
+            p.error("--migrate-to-v2 requires --campaign")
+        if args.engine == "legacy" or args.tm_port is not None:
+            p.error("--migrate-to-v2 requires v2 settings. Remove --engine legacy and --tm-port.")
+        if args.rate_hz is not None:
+            campaign_overrides["rate_hz"] = args.rate_hz
+        try:
+            _migrate_campaign(args.campaign, args.migrate_to_v2, campaign_overrides)
+        except (OSError, TypeError, ValueError) as exc:
+            p.error(f"cannot migrate campaign: {exc}")
+        return 0
 
     if args.campaign:
         try:
             ccfg = CampaignConfig.load(args.campaign)
         except (OSError, TypeError, ValueError) as exc:
             p.error(f"cannot load campaign: {exc}")
-        for name, value in (
-            ("engine", args.engine), ("carla_host", args.carla_host), ("carla_port", args.carla_port),
-            ("radar_points_per_second", args.radar_pps), ("capture_base_dir", args.capture_base_dir),
-        ):
-            if value is not None:
-                setattr(ccfg, name, value)
+        for name, value in campaign_overrides.items():
+            setattr(ccfg, name, value)
         if ccfg.engine == "v2":
             with cooperative_stop() as stop_event:
                 result = run_campaign(ccfg, stop_event=stop_event)
@@ -116,7 +154,8 @@ def main() -> int:
         north = args.radars_north
 
     # Preserve existing single-run commands using a custom clock or Traffic Manager.
-    legacy_options = args.tm_port is not None or args.rate_hz != DEFAULT_RATE_HZ
+    rate_hz = DEFAULT_RATE_HZ if args.rate_hz is None else args.rate_hz
+    legacy_options = args.tm_port is not None or rate_hz != DEFAULT_RATE_HZ
     engine = args.engine or ("legacy" if legacy_options else DEFAULT_ENGINE)
     if engine == "v2" and args.tm_port is not None:
         p.error("--tm-port applies to legacy single runs. Use --engine legacy.")
@@ -131,7 +170,7 @@ def main() -> int:
         radar_points_per_second=args.radar_pps or 0,
         label=args.label, postprocess=args.postprocess,
         capture_base_dir=args.capture_base_dir or "",
-        rate_hz=args.rate_hz, carla_host=args.carla_host or "127.0.0.1",
+        rate_hz=rate_hz, carla_host=args.carla_host or "127.0.0.1",
         carla_port=2000 if args.carla_port is None else args.carla_port,
         traffic_manager_port=8000 if args.tm_port is None else args.tm_port,
         scene_cleanup=args.scene_cleanup, clear_trees=args.clear_trees,

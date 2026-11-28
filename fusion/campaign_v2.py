@@ -2,7 +2,7 @@
 
 from contextlib import ExitStack
 from datetime import datetime
-from math import ceil, isfinite
+from math import ceil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -136,15 +136,7 @@ def run_campaign_v2(cfg, log=None, on_event=None, stop_event=None, *, single=Fal
     def stop_check():
         check_stop(stop_event)
 
-    errors = v2_period_errors(cfg.fixed_delta_s) if single else cfg.validate()
-    if not 1 <= cfg.carla_port <= 65535:
-        errors.append("CARLA port must be between 1 and 65535")
-    if not isfinite(cfg.warmup_s) or cfg.warmup_s < 0:
-        errors.append("warm-up must be finite and nonnegative")
-    for name in ("sync_timeout", "runner_start_timeout_s"):
-        value = getattr(cfg, name)
-        if not isfinite(value) or value <= 0:
-            errors.append(f"{name} must be finite and positive")
+    errors = v2_period_errors(cfg.fixed_delta_s) + cfg.v2_runtime_errors() if single else cfg.validate()
     if errors:
         result.error = ", ".join(errors)
         say(result.error)
