@@ -111,7 +111,7 @@ clocks cannot drift:
 
 ### Headless
 
-Recommended for dataset campaigns:
+Standard 20 Hz single runs use v2 by default. Pass `--engine legacy` to reproduce a legacy run. Single-run commands with a custom `--rate-hz` or `--tm-port` select legacy when the engine is omitted.
 
 ```
 python run_fusion.py \
@@ -135,7 +135,7 @@ Useful options:
 - `--no-scene-cleanup`
 - `--capture-base-dir PATH`
 - `--carla-port`
-- `--tm-port`
+- `--tm-port` for legacy single runs
 
 Run `python run_fusion.py --help` for the complete option list.
 
@@ -146,19 +146,18 @@ python fusion_gui.py
 ```
 
 The GUI provides configuration for traffic, sensors, and simulation rate, with
-process logs displayed in the console panel.
+process logs displayed in the console panel. New campaigns select **v2**. Saved
+campaigns retain their engine, and older files without an engine field use legacy.
 
 ## Fusion Run Sequence
 
-1. Reset any stale CARLA synchronous-mode state.
-2. Optionally clean the previous scene.
-3. Start the radar/camera sensor rig.
-4. Start dataset capture and make it the CARLA tick owner.
-5. Start the SUMO runner with `--external-tick`.
-6. SUMO advances once per CARLA frame and mirrors traffic.
-7. Capture runs until the requested duration, then labels and post-processes.
-8. Stop the SUMO runner and sensor rig.
-9. Restore CARLA to asynchronous mode.
+1. Connect to an idle asynchronous `Town10HD_Opt` CARLA world and start one sensor rig.
+2. Start a private SUMO session for each scenario or campaign row.
+3. Advance SUMO, mirror actors and signals, then tick CARLA once for that step.
+4. Write sensor data and actor geometry for each confirmed recording frame.
+5. Release the SUMO session and rig, restore CARLA settings, and run enabled offline processing.
+
+[Legacy run sequence](README_FUSION.md)
 
 ## Sensor Rig Configuration
 
@@ -266,9 +265,9 @@ combined runs only merge the caches (`--no-cache` forces a re-read). With
 
 ## Known Issues
 
-### CARLA freezes on consecutive runs
+### Legacy engine freezes on consecutive runs
 
-CARLA can still freeze when a second scenario is started without restarting the
+In legacy mode, CARLA can freeze when a second scenario is started without restarting the
 CARLA server. The end-of-run async reset reduces this but does not eliminate it.
 Run a short visual check before launching long unattended campaigns.
 

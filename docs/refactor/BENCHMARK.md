@@ -74,7 +74,7 @@ The existing radar labeler reported zero missing actor frames for all 20 capture
 
 These measurements cover S01, short single-row campaigns, and a 1,200 rays/s budget on one host. Legacy builds routes with a 60 s margin and lets CARLA run its own signals. V2 uses the shorter scenario horizon, mirrors corridor signal aspects, and keeps SUMO and CARLA on the same step. The seed and requested traffic settings match. Those clock and control differences affect the resulting traffic and radar returns. The pipeline comparison verifies dataset compatibility through frame building.
 
-V2 remains opt-in. The measured queue saturation makes the recording path the priority for the next performance pass. Rerun this matrix after tuning and extend the measurements to longer campaigns and the default 15,000 rays/s budget before considering a default change.
+V2 was opt-in at the time of this benchmark. The measured queue saturation motivated the recording changes in the following sections.
 
 ### Reproduce
 
@@ -169,7 +169,7 @@ Every radar CSV scan matched its recorded frame, sensor ID, and return count. Th
 
 The 60-frame excerpt included 20 frames from each scenario and 484,801 radar returns. Labeling reported zero missing actor frames and 10,784 matches. Doppler/RCS processing completed, and PointNet built all 60 frames with the expected scenario and segment IDs. The full-rate Stop regression retained 100 frames from the completed row and 25 from the interrupted second row, skipped the third row, and immediately completed another full-rate capture on the same world.
 
-These results cover one workstation and three scenarios. Legacy remains the default.
+These results cover one workstation and three scenarios. Legacy was the default when these runs were recorded. [Rollout history](PROGRESS.md#2026-11-27--step-10)
 
 To reproduce, run the two commands in sequence on the same dedicated asynchronous CARLA endpoint. Use new output directories. The harness loads the plan and writes aggregate and per-row timings in `result.json`.
 

@@ -146,3 +146,18 @@ V2 remains opt-in while repeated full-rate multi-row campaigns are validated.
 - All 19 unit tests and 15 integration tests passed. The new [full-rate Stop regression](../../tests/integration/test_live_campaign_v2.py) preserved a completed row and the recorded prefix of the second row, skipped the third, and completed a retry on the same world. The offline pipeline passed on a 60-frame excerpt spanning all three scenarios. The isolated CARLA server was stopped.
 
 Legacy remains the default.
+
+## 2026-11-27 · Step 10
+
+- Promoted v2 for standard 20 Hz single runs and for new GUI campaigns. Saved plans retain their explicit engine, and files without an engine field load as legacy. Single runs with a custom rate or Traffic Manager port also select legacy when the engine is omitted. The CLI still accepts an explicit engine override. [Run guide](../../README_RUNNING.md#v2-single-run-capture)
+- Fixed short S10 runs by skipping delayed SUMO flows that start after the configured horizon. V2 checks for a whole-millisecond period and confirms two consecutive CARLA ticks before starting the paired clock. It continues to check every recorded frame for continuity.
+
+| Check | Result |
+| --- | --- |
+| Standard single-run CLI at 20 Hz | Saved 120 complete paired frames in 6 s of simulation with four radars at 800 rays/s. |
+| New default campaign through the CLI | All 11 scenarios launched and recorded 100 complete paired frames per row after 2 s of warm-up. This covered startup and 5 s of recording per scenario. |
+| Legacy CLI selection | Both an older plan without an engine field and `--engine legacy` overriding a saved v2 plan completed. Both reproduced the known Windows teardown issue and left five sensors that the smoke test removed. |
+| Explicit v2 rates on CARLA 0.9.16 | Two 40 Hz runs saved 80 complete frames each, with a 40-frame 20 Hz run between them. At 25 Hz the startup check stopped before creating a rig or capture and restored CARLA settings. |
+| Unit, integration, and legacy traffic suites | 24 unit tests, 17 integration tests, and 21 legacy traffic tests passed. Live checks included GUI defaults and Stop, six CARLA sessions alternating between 20 and 40 Hz, all four radar layouts, and short S10 route startup. |
+
+The final cleanup check found CARLA asynchronous, all 15 traffic lights unfrozen, no sensor or dynamic actors, and no SUMO workers. The isolated CARLA test server was stopped.

@@ -47,6 +47,28 @@ def _wait_for_world(client, endpoint, ready_timeout_s, rpc_timeout_s, stop_check
     raise RuntimeError(f"CARLA at {endpoint} did not become ready in {ready_timeout_s:g}s") from last_error
 
 
+def _confirm_start_frame(world, fixed_delta_s, rpc_timeout_s, stop_check):
+    # ApplySettings can leave a frame in flight. Confirm a clean tick before
+    # any SUMO advance, and keep tick() strict once the session is handed out.
+    previous = world.get_snapshot().frame
+    consecutive = 0
+    for _ in range(4):
+        if stop_check is not None:
+            stop_check()
+        reply = world.tick(rpc_timeout_s)
+        snapshot = world.get_snapshot()
+        if (reply == snapshot.frame == previous + 1
+                and isclose(snapshot.timestamp.delta_seconds, fixed_delta_s, rel_tol=0, abs_tol=1e-7)):
+            consecutive += 1
+            if consecutive == 2:
+                return reply
+        else:
+            consecutive = 0
+        previous = snapshot.frame
+    raise RuntimeError(f"CARLA did not confirm consecutive {fixed_delta_s:g}s setup ticks. "
+                       "Use 20 Hz on this server or select the legacy engine.")
+
+
 @contextmanager
 def open_carla_session(host, port, fixed_delta_s, *, ready_timeout_s, rpc_timeout_s, stop_check=None):
     """Connect to an idle Town10HD_Opt world and restore its settings on exit."""
@@ -84,9 +106,9 @@ def open_carla_session(host, port, fixed_delta_s, *, ready_timeout_s, rpc_timeou
             effective.fixed_delta_seconds or 0, fixed_delta_s, rel_tol=0, abs_tol=1e-7
         ):
             raise RuntimeError("CARLA did not enable the requested synchronous fixed delta")
-        # CARLA 0.9.16 can tick while applying fixed settings. Anchor afterwards.
+        initial_frame = _confirm_start_frame(world, fixed_delta_s, rpc_timeout_s, stop_check)
         yield CarlaSession(
-            client, world, server_version, world.get_snapshot().frame, fixed_delta_s, rpc_timeout_s
+            client, world, server_version, initial_frame, fixed_delta_s, rpc_timeout_s
         )
     finally:
         world.apply_settings(original_settings, rpc_timeout_s)

@@ -1,7 +1,7 @@
 """RadarSumoFusion -- headless fused run.
 
-SUMO governs traffic; DatasetCreation spawns the radar/camera rig and records.
-Capture owns the CARLA tick; the SUMO runner subscribes to it.
+V2 advances SUMO, mirrors its traffic in CARLA, and records paired sensor frames.
+Use --engine legacy to select the original coordinator.
 
 Example:
     python run_fusion.py --scenario 3 --density 60 --duration 300 \
@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from fusion.config import FusionConfig, MAX_RADARS_PER_SIDE, split_radar_count
+from fusion.config import DEFAULT_ENGINE, DEFAULT_RATE_HZ, FusionConfig, MAX_RADARS_PER_SIDE, split_radar_count
 from fusion.orchestrator import run
 from fusion.campaign import CampaignConfig, run_campaign
 from fusion.traffic_session import cooperative_stop
@@ -73,11 +73,12 @@ def main() -> int:
                "run post-processing after capture", "skip post-processing")
     p.add_argument("--capture-base-dir", help="override output root")
     # shared clock / carla
-    p.add_argument("--rate-hz", type=float, default=20.0,
-                   help="tick rate: CARLA fixed_delta = radar tick = SUMO step")
+    p.add_argument("--rate-hz", type=float, default=DEFAULT_RATE_HZ,
+                   help="shared tick rate (select --engine v2 explicitly for custom v2 rates)")
     p.add_argument("--carla-host")
     p.add_argument("--carla-port", type=int)
-    p.add_argument("--tm-port", type=int, default=8000, help="TrafficManager port")
+    p.add_argument("--tm-port", type=int,
+                   help="legacy single-run Traffic Manager port, default 8000 (implies legacy if --engine is omitted)")
     # orchestration
     _bool_flag(p, "scene-cleanup", True,
                "clear parked cars/trash first", "skip scene cleanup")
@@ -85,7 +86,7 @@ def main() -> int:
                "hide trees over the monitored stretch", "keep trees")
     p.add_argument("--sync-timeout", type=float, default=180.0)
     p.add_argument("--engine", choices=("legacy", "v2"),
-                   help="capture engine (default: legacy or the saved campaign setting)")
+                   help="capture engine (default: v2 for standard 20 Hz single runs or the saved campaign setting)")
     p.add_argument("--campaign", default="",
                    help="run a saved campaign JSON; --engine, --carla-host, --carla-port, "
                         "--radar-pps and --capture-base-dir can override its settings")
@@ -114,6 +115,12 @@ def main() -> int:
     if args.radars_north is not None:
         north = args.radars_north
 
+    # Preserve existing single-run commands using a custom clock or Traffic Manager.
+    legacy_options = args.tm_port is not None or args.rate_hz != DEFAULT_RATE_HZ
+    engine = args.engine or ("legacy" if legacy_options else DEFAULT_ENGINE)
+    if engine == "v2" and args.tm_port is not None:
+        p.error("--tm-port applies to legacy single runs. Use --engine legacy.")
+
     cfg = FusionConfig(
         scenario=args.scenario, density=args.density, duration=args.duration,
         direction=args.direction, ambient_vehicles=args.ambient_vehicles,
@@ -126,11 +133,11 @@ def main() -> int:
         capture_base_dir=args.capture_base_dir or "",
         rate_hz=args.rate_hz, carla_host=args.carla_host or "127.0.0.1",
         carla_port=2000 if args.carla_port is None else args.carla_port,
-        traffic_manager_port=args.tm_port,
+        traffic_manager_port=8000 if args.tm_port is None else args.tm_port,
         scene_cleanup=args.scene_cleanup, clear_trees=args.clear_trees,
         sync_timeout=args.sync_timeout,
     )
-    if args.engine == "v2":
+    if engine == "v2":
         from fusion.campaign_v2 import run_single_v2
 
         with cooperative_stop() as stop_event:

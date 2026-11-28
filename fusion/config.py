@@ -15,6 +15,8 @@ from pathlib import Path
 
 MAX_RADARS_PER_SIDE = 16
 SETUP_SCRIPT_NAME = "RadarCameraSetup.py"
+DEFAULT_ENGINE = "v2"
+DEFAULT_RATE_HZ = 20.0
 
 
 def split_radar_count(total: int) -> tuple:
@@ -40,6 +42,13 @@ def radar_pps_errors(pps: int) -> list:
     pps = int(pps or 0)
     if pps and not (500 <= pps <= 20000):
         return [f"radar_points_per_second must be 0 (default) or 500-20000 (got {pps})"]
+    return []
+
+
+def v2_period_errors(fixed_delta_s: float) -> list[str]:
+    if fixed_delta_s != round(fixed_delta_s, 3):
+        return ["v2 requires a tick period in whole milliseconds. Use 20 Hz (50 ms) "
+                "or select the legacy engine."]
     return []
 
 
@@ -71,7 +80,7 @@ class FusionConfig:
     capture_base_dir: str = ""        # optional override for the output root
 
     # --- Shared clock / CARLA ---
-    rate_hz: float = 20.0             # 20 Hz -> fixed_delta 0.05 s
+    rate_hz: float = DEFAULT_RATE_HZ   # 20 Hz -> fixed_delta 0.05 s
     carla_host: str = "127.0.0.1"
     carla_port: int = 2000
     traffic_manager_port: int = 8000

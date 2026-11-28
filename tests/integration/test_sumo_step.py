@@ -9,11 +9,10 @@ traci = validator.traci
 
 
 class SumoStepIntegrationTests(unittest.TestCase):
-    def run_session(self, initial_carla_frame):
+    def run_session(self, initial_carla_frame, *, scenario=1, duration=10):
         fixed_delta_s = 0.05
-        duration = 10
         config, temp_files = validator.build_files(
-            scenario_id=1,
+            scenario_id=scenario,
             density=60,
             duration=duration,
             direction="BOTH",
@@ -72,3 +71,7 @@ class SumoStepIntegrationTests(unittest.TestCase):
         second = self.run_session(initial_carla_frame=700)
 
         self.assertEqual(first, second)
+
+    def test_short_multilane_overtake_run_starts_before_delayed_flows(self):
+        times, _ = self.run_session(initial_carla_frame=900, scenario=10, duration=7)
+        self.assertEqual(len(times), 140)

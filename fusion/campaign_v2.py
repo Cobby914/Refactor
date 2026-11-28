@@ -9,6 +9,7 @@ from threading import Event
 
 from .campaign import CampaignConfig, CampaignResult, RowOutcome, RunSpec, _write_json_atomic, write_campaign_record
 from .carla_adapter import open_carla_session
+from .config import v2_period_errors
 from .orchestrator import _say
 from .traffic_session import (
     StopRequested,
@@ -135,7 +136,7 @@ def run_campaign_v2(cfg, log=None, on_event=None, stop_event=None, *, single=Fal
     def stop_check():
         check_stop(stop_event)
 
-    errors = [] if single else cfg.validate()
+    errors = v2_period_errors(cfg.fixed_delta_s) if single else cfg.validate()
     if not 1 <= cfg.carla_port <= 65535:
         errors.append("CARLA port must be between 1 and 65535")
     if not isfinite(cfg.warmup_s) or cfg.warmup_s < 0:

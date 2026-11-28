@@ -74,3 +74,11 @@ At 14 radars and 15,000 rays/s, the original v2 radar CSV stage spent 37.8 ms pe
 ## Full-rate campaign findings in Step 9
 
 Two consecutive 14-radar, three-row campaigns recorded all 7,200 expected paired frames across the two runs. Every radar scan matched its sensor and frame in the written CSV. Row boundaries preserved one rig, reset SUMO time, and kept dynamic actors from earlier rows out of later recordings. Total radar return counts differed by 229 across the two runs, with complete sensor coverage in both. Heavy Demand exceeded the 50 ms tick budget at p95 on the test host. [Multi-row benchmark](BENCHMARK.md#repeated-full-rate-campaigns)
+
+## Rollout findings in Step 10
+
+Short S10 plans exposed a route-template error. Truncating the run to seven seconds placed the end of its delayed fast flows before their 20-second start. The route builder now omits flows whose starts fall after the run horizon. The 11-scenario launch check passed after the fix.
+
+On the test server, changing the fixed delta could leave the first returned tick frame one behind the world snapshot. At 25 and 50 Hz, direct CARLA checks also observed two-frame advances on individual tick calls after the initial setting change. The v2 adapter now confirms two consecutive ticks before establishing the paired clock. The default stays at the verified 20 Hz.
+
+Both legacy CLI launches still left their five rig sensors on Windows. The smoke test cleared those sensors on the isolated server. [Rollout verification](PROGRESS.md#2026-11-27--step-10)

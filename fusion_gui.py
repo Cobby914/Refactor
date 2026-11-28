@@ -346,7 +346,7 @@ class CampaignGUI:
         ttk.Label(run_row, text="Engine").pack(side="left", padx=(0, 4))
         self.engine = tk.StringVar(value=self._campaign_defaults.engine)
         self.engine_selector = ttk.Combobox(
-            run_row, textvariable=self.engine, values=("legacy", "v2"), state="readonly", width=8,
+            run_row, textvariable=self.engine, values=("v2", "legacy"), state="readonly", width=8,
         )
         self.engine_selector.pack(side="left", padx=(0, 12))
         self.start_btn = ttk.Button(run_row, text="Start campaign", command=self._start)

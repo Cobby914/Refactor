@@ -1,5 +1,7 @@
 # RadarSumoFusion
 
+This document describes the legacy engine. Use `--engine legacy` for the CLI examples and select **legacy** in the campaign GUI. [Current run guide](README_RUNNING.md)
+
 A fresh merge of two components into one dataset-capture system:
 
 - **`traffic/`** - the SUMO traffic prototype. SUMO governs ALL traffic
@@ -48,7 +50,7 @@ Safety nets carried over from the tick-rate work:
 
 ### Headless (recommended for campaigns)
 ```
-python run_fusion.py --scenario 3 --density 60 --duration 300 \
+python run_fusion.py --engine legacy --scenario 3 --density 60 --duration 300 \
     --radars 8 --rate-hz 20 --pedestrians 20 --bicycles 10
 ```
 Radar rig: `--radars N` splits N evenly between the kerbs; `--radars-south S
@@ -150,7 +152,7 @@ capture): radar rig, rate, warm-up per run, label / post-process, scene cleanup.
 post-processes what was recorded. Headless:
 
 ```
-python run_fusion.py --campaign my_campaign.json
+python run_fusion.py --engine legacy --campaign my_campaign.json
 ```
 
 How it runs (`fusion/campaign.py`):

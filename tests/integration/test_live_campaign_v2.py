@@ -134,6 +134,12 @@ class LiveCampaignV2Tests(unittest.TestCase):
                 patch.object(fusion_gui.messagebox, "askyesno", return_value=True):
             app = fusion_gui.CampaignGUI(root)
             try:
+                self.assertEqual(app.engine.get(), "v2")
+                old_plan = cfg.to_dict()
+                old_plan.pop("engine")
+                fusion_gui.AUTOSAVE.write_text(json.dumps(old_plan), encoding="utf-8")
+                app._autoload()
+                self.assertEqual(app.engine.get(), "legacy")
                 app._apply_config(cfg)
                 app.start_btn.invoke()
                 self.wait_for_gui(root, lambda: app.status[0].startswith("recording") or not app._running)

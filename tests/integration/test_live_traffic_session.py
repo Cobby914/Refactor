@@ -123,6 +123,15 @@ class LiveTrafficSessionTests(unittest.TestCase):
             self.assertTrue(self.world.get_settings().synchronous_mode)
         self.assert_session_released(1)
 
+    def test_alternating_fixed_deltas_confirm_a_consecutive_startup_tick(self):
+        for delta in (0.025, 0.05) * 3:
+            with self.subTest(delta=delta), open_carla_session(
+                self.host, self.port, delta, ready_timeout_s=10, rpc_timeout_s=5,
+            ) as session:
+                self.assertEqual(session.tick(), session.initial_frame + 1)
+                self.assertAlmostEqual(session.world.get_snapshot().timestamp.delta_seconds, delta, places=6)
+            self.assert_session_released(0)
+
     def test_cars_bicycles_and_walkers_move_as_corridor_aspects_change(self):
         self.config = Path(build_files(
             scenario_id=1, density=60, duration=40, direction="BOTH", ambient_vehicles=3,

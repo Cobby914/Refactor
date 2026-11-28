@@ -57,6 +57,7 @@ import tempfile
 import signal
 import subprocess
 import time
+from xml.etree import ElementTree
 
 # --- TraCI import ---
 # sumo_env finds SUMO on Windows, Linux (apt / pip) and macOS alike.
@@ -236,6 +237,16 @@ def substitute_density(template_path: str, density_map: dict, duration: int, *, 
     # file on disk says is only a fallback.
     if AMBIENT_AVAILABLE:
         content = ambient_traffic.apply_map_edge_routes(content)
+
+    # Truncating a route window can put its end before a delayed flow's begin.
+    # Those flows cannot depart during this run.
+    routes = ElementTree.fromstring(content)
+    future_flows = [flow for flow in routes.findall("flow")
+                    if sumolib.miscutils.parseTime(flow.get("begin", "0")) > duration]
+    if future_flows:
+        for flow in future_flows:
+            routes.remove(flow)
+        content = ElementTree.tostring(routes, encoding="unicode")
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".rou.xml", delete=False, encoding="utf-8", dir=temp_dir

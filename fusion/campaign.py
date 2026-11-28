@@ -1,4 +1,7 @@
-"""Campaign orchestrator: several traffic scenarios, one sensor capture.
+"""Dispatch campaigns and implement the legacy multi-row capture path.
+
+The v2 coordinator runs in campaign_v2. The legacy coordinator uses the
+following process sequence.
 
     preflight heal -> scene cleanup -> sensor rig (once)
     -> capture (once, CAMPAIGN MODE: owns the tick, records only the frame
@@ -36,7 +39,10 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import FusionConfig, radar_pps_errors, radar_rig_errors, split_radar_count
+from .config import (
+    DEFAULT_ENGINE, DEFAULT_RATE_HZ, FusionConfig, radar_pps_errors, radar_rig_errors,
+    split_radar_count, v2_period_errors,
+)
 from . import orchestrator as _orc
 
 SCENARIO_NAMES = {
@@ -103,7 +109,7 @@ class CampaignConfig:
     radars_north: int = 4
     radar_height_m: float = 3.0
     radar_points_per_second: int = 0   # 0 = capture default (15000); see FusionConfig
-    rate_hz: float = 20.0
+    rate_hz: float = DEFAULT_RATE_HZ
     warmup_s: float = 20.0        # per row, not recorded: traffic reaches the stretch
     label: bool = True
     postprocess: bool = True
@@ -122,7 +128,7 @@ class CampaignConfig:
     sensor_settle_s: float = 5.0
     cleanup_verify_s: float = 15.0
     runner_start_timeout_s: float = 240.0
-    engine: str = "legacy"
+    engine: str = DEFAULT_ENGINE
 
     @property
     def fixed_delta_s(self) -> float:
@@ -144,6 +150,8 @@ class CampaignConfig:
         errs += radar_pps_errors(self.radar_points_per_second)
         if not (1.0 <= self.rate_hz <= 200.0):
             errs.append(f"rate_hz must be 1-200 (got {self.rate_hz})")
+        elif self.engine == "v2":
+            errs.extend(v2_period_errors(self.fixed_delta_s))
         if self.warmup_s < 0:
             errs.append("warm-up must be >= 0 s")
         return errs
@@ -174,6 +182,8 @@ class CampaignConfig:
     @classmethod
     def from_dict(cls, d: dict) -> "CampaignConfig":
         known = {k: d[k] for k in cls.__dataclass_fields__ if k in d and k != "runs"}
+        # Campaigns saved before engine selection were legacy runs.
+        known.setdefault("engine", "legacy")
         if ("radars_south" not in d and "radars_north" not in d
                 and d.get("radar_count") is not None):
             known["radars_south"], known["radars_north"] = split_radar_count(d["radar_count"])
