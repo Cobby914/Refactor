@@ -178,3 +178,16 @@ $env:DATASET_CAMERA_ENCODER_THREADS = '2'
 python -B tests/benchmark_capture.py --engine v2 --port 22000 --campaign tests/fixtures/full_rate_campaign.json --output "$env:TEMP/scalesense-full-rate-1"
 python -B tests/benchmark_capture.py --engine v2 --port 22000 --campaign tests/fixtures/full_rate_campaign.json --output "$env:TEMP/scalesense-full-rate-2"
 ```
+
+## Full-load tick latency follow-up
+
+Two S03 Heavy Demand trials on the same CARLA server recorded 120 s at 20 Hz after 20 s of warm-up, with 14 radars at 15,000 rays/s each. Both used density 60, 30 ambient vehicles, 20 pedestrians, 10 bicycles, and seed 42. Each saved 2,400 complete frames and 33,600 radar scans, and each restored the world with no actors left behind.
+
+| Trial | Recording wall time | Tick interval p95 | Actor mirror p95 |
+| --- | ---: | ---: | ---: |
+| Baseline (`dd0141f`) | 108.90 s | 59.04 ms | 43.07 ms |
+| Experimental spatial filter | 117.03 s | 66.99 ms | 50.35 ms |
+
+The spatial filter grouped occupied bounds by x coordinate before applying the existing swept collision checks. It was dropped after the matched trial. In a separate 60 s profile of the original mirror, per-frame TraCI position, heading, and lane reads took 15.53 ms at the median and 28.93 ms at p95. Planning the swept bounds took 3.22 ms at the median and 4.23 ms at p95. The profiled tick interval was 58.48 ms at p95. These are wall-clock timings from one workstation. The next experiment is to reduce TraCI round trips while preserving the pose recorded for each paired frame.
+
+To profile a workload, pass `--profile-mirror` to the v2 benchmark. The result JSON includes `traci_pose_queries` and `mirror_plan` under `recording_stages`. Use the same campaign and profiler settings across trials.

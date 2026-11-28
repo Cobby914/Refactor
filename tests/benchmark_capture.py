@@ -55,6 +55,22 @@ class Trace:
         measured = self.measure(getattr(owner, name), observe)
         self.stack.enter_context(patch.object(owner, name, measured))
 
+    def profile_mirror(self, mirror):
+        from traci import constants
+        from traci.domain import Domain
+
+        pose_variables = (constants.VAR_POSITION, constants.VAR_ANGLE, constants.VAR_LANE_ID)
+        query_times = defaultdict(float)
+
+        def record_pose_query(args, _, start, end):
+            if args[0]._name in ("vehicle", "person") and args[1] in pose_variables:
+                query_times[self.last_tick + 1] += end - start
+
+        self.wrap(Domain, "_getUniversal", record_pose_query)
+        self.wrap(mirror, "_plan_updates", lambda _, __, start, end:
+                  self.samples["mirror_plan"].append((self.last_tick + 1, start, end)))
+        return query_times
+
     @staticmethod
     def measure(original, observe):
         @wraps(original)
@@ -246,8 +262,9 @@ def summarize(directory, trace, run_end):
         with manifest.open(encoding="utf-8") as file:
             summary["sumo_recording_end_s"] = json.loads(list(file)[-1])["sumo_time_s"]
         summary["recording_stages"] = {}
-        stages = ("ground_truth", "writer_submit", "png_encode", "camera_metadata", "radar_csv",
-                  "radar_format", "radar_output")
+        stages = ["ground_truth", "writer_submit", "png_encode", "camera_metadata", "radar_csv",
+                  "radar_format", "radar_output"]
+        stages.extend(stage for stage in ("mirror_plan", "traci_pose_queries") if stage in trace)
         for stage in stages:
             by_frame = defaultdict(float)
             for frame, start, end in trace[stage]:
@@ -330,6 +347,8 @@ def run_trial(args):
                        trace.samples["paired_step"].append((frame.carla_frame, start, end)))
             trace.wrap(ActorMirror, "step", lambda _, result, start, end:
                        trace.samples["mirror"].append((trace.last_tick + 1, start, end)))
+            if args.profile_mirror:
+                query_times = trace.profile_mirror(ActorMirror)
         started = perf_counter()
         # This harness can also be copied into an older revision for comparison.
         if args.engine == "v2" and "carla_client" in signature(run_campaign).parameters:
@@ -337,6 +356,8 @@ def run_trial(args):
         else:
             result = run_campaign(cfg)
         run_end = perf_counter()
+        if args.profile_mirror:
+            trace.samples["traci_pose_queries"] = [(frame, 0, seconds) for frame, seconds in query_times.items()]
 
     actors = world.get_actors()
     leftovers = [actor for actor in actors if actor.id not in baseline_ids]
@@ -390,7 +411,12 @@ def main():
     parser.add_argument("--duration", type=int, default=22, help="recorded seconds for the single-row preset")
     parser.add_argument("--warmup", type=float, default=8, help="warm-up seconds for the single-row preset")
     parser.add_argument("--radar-pps", type=int, default=1200, help="rays per second for the single-row preset")
-    return run_trial(parser.parse_args())
+    parser.add_argument("--profile-mirror", action="store_true",
+                        help="measure v2 mirror planning and TraCI pose queries separately")
+    args = parser.parse_args()
+    if args.profile_mirror and args.engine != "v2":
+        parser.error("--profile-mirror requires --engine v2")
+    return run_trial(args)
 
 
 if __name__ == "__main__":
